@@ -1,0 +1,105 @@
+name: "[Release] Publish Package"
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ${{ vars.RELEASE_RUNNER || 'public-ledgerhq-shared-medium' }}
+    environment: release
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.GH_BOT_APP_ID }}
+          private-key: ${{ secrets.GH_BOT_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Reject unconsumed changesets
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          pending=()
+          for file in .changeset/*.md; do
+            [ "$(basename "$file")" = "README.md" ] && continue
+            pending+=("$file")
+          done
+          if [ "${#pending[@]}" -gt 0 ]; then
+            echo "::error::main contains unconsumed changesets: ${pending[*]}"
+            exit 1
+          fi
+
+      - name: Set up toolchain
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+
+      - name: Authenticate to JFrog read registry
+        uses: LedgerHQ/ts-libs/.github/actions/jfrog-npm-auth@d63c684313345b065a950d557cb8d4a09c1e9ab1
+        with:
+          registry: ${{ vars.ARTIFACTORY_URL }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify
+        run: pnpm verify
+
+      - name: Require publish registry
+        env:
+          PUBLISH_REGISTRY: ${{ vars.ARTIFACTORY_PUBLISH_URL }}
+        run: |
+          if [ -z "$PUBLISH_REGISTRY" ]; then
+            echo "::error::ARTIFACTORY_PUBLISH_URL is not configured."
+            exit 1
+          fi
+
+      - name: Authenticate to JFrog publish registry
+        uses: LedgerHQ/ts-libs/.github/actions/jfrog-npm-auth@d63c684313345b065a950d557cb8d4a09c1e9ab1
+        with:
+          registry: ${{ vars.ARTIFACTORY_PUBLISH_URL }}
+
+      - name: Pack package
+        id: pack
+        env:
+          OUT_DIR: ${{ runner.temp }}/changesets-pack
+        run: |
+          pnpm exec changeset pack --out-dir "$OUT_DIR"
+          shopt -s nullglob
+          tarballs=("$OUT_DIR"/packages/*.tgz)
+          {
+            echo "out-dir=$OUT_DIR"
+            echo "count=${#tarballs[@]}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Attest package
+        if: steps.pack.outputs.count != '0'
+        uses: LedgerHQ/actions-security/actions/attest-for-npmsjs-com@attest-npm-dir-support
+        with:
+          subject-path: ${{ steps.pack.outputs.out-dir }}/packages
+
+      - name: Publish, tag, and create GitHub release
+        uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          publish-script: pnpm exec changeset publish --from-pack-dir "${{ steps.pack.outputs.out-dir }}"

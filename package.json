@@ -1,0 +1,60 @@
+{
+  "name": "@ledgerhq/agent-intent-sdk",
+  "version": "0.0.0",
+  "description": "Headless TypeScript SDK for Ledger Agent Intent",
+  "keywords": [
+    "agent",
+    "intent",
+    "ledger",
+    "sdk"
+  ],
+  "license": "UNLICENSED",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "restricted"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist coverage",
+    "changelog": "changeset add",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "lint": "oxlint .",
+    "pack:check": "node scripts/pack-check.mjs",
+    "release": "changeset publish",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit",
+    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm pack:check"
+  },
+  "dependencies": {
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0"
+  },
+  "devDependencies": {
+    "@changesets/changelog-github": "1.0.1",
+    "@changesets/cli": "3.0.3",
+    "@types/node": "26.6.1",
+    "@vitest/coverage-v8": "5.0.1",
+    "oxfmt": "0.68.0",
+    "oxlint": "1.83.0",
+    "typescript": "7.0.2",
+    "vitest": "5.0.1"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "packageManager": "pnpm@11.13.1"
+}

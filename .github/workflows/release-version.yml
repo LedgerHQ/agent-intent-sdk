@@ -1,0 +1,58 @@
+name: "[Release] Version Package"
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Maintain version pull request
+    if: >-
+      !startsWith(github.event.head_commit.message, 'chore(release): version package')
+      && !contains(github.event.head_commit.message, 'changeset-release/')
+    runs-on: public-ledgerhq-shared-medium
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.GH_BOT_APP_ID }}
+          private-key: ${{ secrets.GH_BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up toolchain
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+
+      - name: Authenticate to JFrog
+        uses: LedgerHQ/ts-libs/.github/actions/jfrog-npm-auth@d63c684313345b065a950d557cb8d4a09c1e9ab1
+        with:
+          registry: ${{ vars.ARTIFACTORY_URL }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Create or update version pull request
+        uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          commit-message: "chore(release): version package"
+          pr-title: "chore(release): version package"

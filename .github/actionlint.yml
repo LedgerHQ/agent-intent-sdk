@@ -1,0 +1,5 @@
+self-hosted-runner:
+  labels:
+    - public-ledgerhq-shared-medium
+  paths:
+    .github/workflows/*.yml: ~
