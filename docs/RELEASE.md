@@ -16,7 +16,6 @@ contents and pull requests.
 
 ### Repository variables
 
-- `ARTIFACTORY_URL`: JFrog npm read registry
 - `RELEASE_RUNNER`: optional runner override; defaults to
   `public-ledgerhq-shared-medium`
 
@@ -25,7 +24,8 @@ contents and pull requests.
 - `ARTIFACTORY_PUBLISH_URL`: JFrog npm publish registry
 
 The environment can require maintainer approval. Publishing uses JFrog OIDC;
-do not configure a long-lived npm token.
+do not configure a long-lived npm token. The JFrog `github-oidc` provider must
+also authorize OIDC subjects from `LedgerHQ/agent-intent-sdk`.
 
 ## Flow
 

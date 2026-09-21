@@ -54,11 +54,6 @@ jobs:
       - name: Set up toolchain
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
 
-      - name: Authenticate to JFrog read registry
-        uses: LedgerHQ/ts-libs/.github/actions/jfrog-npm-auth@d63c684313345b065a950d557cb8d4a09c1e9ab1
-        with:
-          registry: ${{ vars.ARTIFACTORY_URL }}
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
