@@ -69,12 +69,11 @@ locally.
 1. Merge a pull request with a changeset into `develop`.
 2. The release workflow opens or updates `chore(release): version package`.
 3. Review and merge that version pull request into `develop`.
-4. Open and merge a promotion pull request from `develop` to `main`.
-5. The publish workflow builds, verifies, attests, and publishes the package to
-   Ledger JFrog, then creates the package tag and GitHub release.
+4. The same workflow builds, verifies, and publishes the version to Ledger
+   JFrog, then creates the package tag and GitHub release.
 
-`main` must never contain unconsumed changesets. The publish workflow fails
-closed if a promotion happens before the version pull request is merged.
+`develop` is the only long-lived branch. Version tags are the immutable release
+history; there is no release-promotion branch.
 
 Repository maintainers must configure the GitHub App credentials and JFrog
 variables listed in [docs/RELEASE.md](./docs/RELEASE.md).
