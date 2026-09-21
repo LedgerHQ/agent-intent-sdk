@@ -1,0 +1,3 @@
+# Match the Ledger Renovate base preset's seven-day minimum release age.
+# pnpm expresses this value in minutes.
+minimumReleaseAge: 10080

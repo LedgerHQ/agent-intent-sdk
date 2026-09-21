@@ -1,0 +1,7 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "github>LedgerHQ/renovate-config:base.json5",
+    "github>LedgerHQ/renovate-config//infra/gha.json5"
+  ]
+}

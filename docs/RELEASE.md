@@ -1,7 +1,7 @@
 # Release process
 
 The repository follows the single-branch Changesets model used by
-`LedgerHQ/wallet-api`. `develop` is the only long-lived branch, and version tags
+`LedgerHQ/wallet-api`. `main` is the only long-lived branch, and version tags
 are the immutable release history.
 
 ## Required repository configuration
@@ -26,10 +26,10 @@ Publishing uses JFrog OIDC; do not configure a long-lived npm token. The JFrog
 
 ## Flow
 
-1. A push to `develop` with pending changesets updates the version pull request.
+1. A push to `main` with pending changesets updates the version pull request.
 2. Merging the version pull request consumes changesets, updates the version,
    and writes `CHANGELOG.md`.
-3. The resulting push to `develop` has no pending changesets, so the same
+3. The resulting push to `main` has no pending changesets, so the same
    workflow verifies and publishes the package, then creates a tag and GitHub
    release.
 

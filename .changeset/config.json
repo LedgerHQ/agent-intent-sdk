@@ -3,7 +3,7 @@
   "changelog": ["@changesets/changelog-github", { "repo": "LedgerHQ/agent-intent-sdk" }],
   "commit": false,
   "access": "restricted",
-  "baseBranch": "develop",
+  "baseBranch": "main",
   "format": "oxfmt",
   "updateInternalDependencies": "patch"
 }

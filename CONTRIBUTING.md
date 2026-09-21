@@ -6,7 +6,7 @@ SDKs, application state, and development-only mocks.
 
 ## Get started
 
-1. Create a branch from `develop`.
+1. Create a branch from `main`.
 2. Run `mise install`.
 3. Run `pnpm install`.
 4. Run `pnpm verify` before opening a pull request.
@@ -21,7 +21,7 @@ pull-request titles follow
 feat(enrollment): add a new enrollment source
 ```
 
-Open pull requests against `develop`. Keep changes focused and include tests for
+Open pull requests against `main`. Keep changes focused and include tests for
 protocol encoding, validation, authentication, or public API changes.
 
 ## Required checks
@@ -66,13 +66,13 @@ not need a changeset.
 Releases are automated; do not run `changeset version` or `changeset publish`
 locally.
 
-1. Merge a pull request with a changeset into `develop`.
+1. Merge a pull request with a changeset into `main`.
 2. The release workflow opens or updates `chore(release): version package`.
-3. Review and merge that version pull request into `develop`.
+3. Review and merge that version pull request into `main`.
 4. The same workflow builds, verifies, and publishes the version to Ledger
    JFrog, then creates the package tag and GitHub release.
 
-`develop` is the only long-lived branch. Version tags are the immutable release
+`main` is the only long-lived branch. Version tags are the immutable release
 history; there is no release-promotion branch.
 
 Repository maintainers must configure the GitHub App credentials and JFrog
