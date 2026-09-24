@@ -249,7 +249,15 @@ function isPublicKey(value: string): boolean {
 }
 
 function isCompressedPublicKey(value: string | undefined): value is string {
-  return value !== undefined && value.length === 66 && HEX.test(value);
+  if (value === undefined || value.length !== 66 || !HEX.test(value)) {
+    return false;
+  }
+  try {
+    secp256k1.Point.fromHex(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isEnrollmentEnvironment(

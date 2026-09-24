@@ -56,6 +56,12 @@ describe("encrypted enrollment channel", () => {
         channelHost: createSoftwareAgentIdentity().publicKey,
       }),
     ).toMatchObject({ status: "invalid", reason: "invalid-signature" });
+    expect(
+      validateAgentEnrollment({
+        ...agentEnrollmentSearch(request),
+        channelHost: `02${"ff".repeat(32)}`,
+      }),
+    ).toMatchObject({ status: "invalid", reason: "malformed" });
     host.close();
   });
 
