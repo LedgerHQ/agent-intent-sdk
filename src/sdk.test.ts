@@ -9,6 +9,7 @@ import {
 } from "./completion.ts";
 import {
   agentEnrollmentSearch,
+  canonicalAgentEnrollmentPayload,
   createAgentEnrollmentRequest,
   validateAgentEnrollment,
 } from "./enrollment.ts";
@@ -47,6 +48,24 @@ describe("agent enrollment", () => {
       status: "valid",
       request,
     });
+  });
+
+  it("matches the fixed version-1 canonical request and signature vector", () => {
+    const request = createAgentEnrollmentRequest(createSoftwareAgentIdentity(SECRET_KEY), {
+      name: "Portfolio Bot",
+      description: "Proposes portfolio operations.",
+      source: "hermes",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+
+    expect(new TextDecoder().decode(canonicalAgentEnrollmentPayload(request)))
+      .toMatchInlineSnapshot(`
+      "agent-intent:agent-enrollment:v1
+      {"v":"1","publicKey":"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798","name":"Portfolio Bot","description":"Proposes portfolio operations.","source":"hermes","expiresAt":"2099-01-01T00:00:00.000Z"}"
+    `);
+    expect(request.signature).toMatchInlineSnapshot(
+      `"da7cc196a2ccf796fe84ff5123a68b7d0970ec7c80a06627e35fb41bc1ea2048646eb5eafb759affaff2fb692396ac8e6c568b98358fd8c70e54815b4e518087"`,
+    );
   });
 
   it("accepts 80-character names and rejects longer names", () => {

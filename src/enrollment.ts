@@ -3,12 +3,12 @@ import { AgentIntentSdkError, bytesToHex, hexToBytes } from "./bytes.ts";
 import { SIGNATURE_COMPACT, sha256Digest, type AgentIdentity } from "./identity.ts";
 
 export const AGENT_ENROLLMENT_VERSION = "1";
+export const AGENT_ENROLLMENT_CHANNEL_VERSION = "2";
 export const SUPPORTED_AGENT_SOURCES = ["openclaw", "hermes"] as const;
 
 export type AgentSource = (typeof SUPPORTED_AGENT_SOURCES)[number];
 
-export type AgentEnrollmentRequest = {
-  version: typeof AGENT_ENROLLMENT_VERSION;
+type AgentEnrollmentRequestBase = {
   publicKey: string;
   name: string;
   description: string;
@@ -16,6 +16,25 @@ export type AgentEnrollmentRequest = {
   expiresAt: string;
   signature: string;
 };
+
+export type AgentEnrollmentRequestV1 = AgentEnrollmentRequestBase & {
+  version: typeof AGENT_ENROLLMENT_VERSION;
+};
+
+export type AgentEnrollmentChannelBinding = {
+  environment: "staging" | "production";
+  hostPublicKey: string;
+};
+
+export type AgentEnrollmentRequestV2 = AgentEnrollmentRequestBase & {
+  version: typeof AGENT_ENROLLMENT_CHANNEL_VERSION;
+  channel: AgentEnrollmentChannelBinding;
+};
+
+export type AgentEnrollmentRequest = AgentEnrollmentRequestV1 | AgentEnrollmentRequestV2;
+type UnsignedAgentEnrollmentRequest =
+  | Omit<AgentEnrollmentRequestV1, "signature">
+  | Omit<AgentEnrollmentRequestV2, "signature">;
 
 export type AgentEnrollmentValidation =
   | { status: "valid"; request: AgentEnrollmentRequest }
@@ -33,8 +52,10 @@ export function isAgentSource(value: string): value is AgentSource {
 }
 
 export function canonicalAgentEnrollmentPayload(
-  request: Omit<AgentEnrollmentRequest, "signature">,
+  request: UnsignedAgentEnrollmentRequest | Omit<AgentEnrollmentRequest, "signature">,
 ): Uint8Array {
+  const channel =
+    request.version === AGENT_ENROLLMENT_CHANNEL_VERSION ? channelFromRequest(request) : undefined;
   const payload = JSON.stringify({
     v: request.version,
     publicKey: request.publicKey.toLowerCase(),
@@ -42,8 +63,27 @@ export function canonicalAgentEnrollmentPayload(
     description: request.description,
     source: request.source,
     expiresAt: request.expiresAt,
+    ...(channel === undefined
+      ? {
+          channelEnvironment: undefined,
+          channelHost: undefined,
+        }
+      : {
+          channelEnvironment: channel.environment,
+          channelHost: channel.hostPublicKey.toLowerCase(),
+        }),
   });
-  return encoder.encode(`agent-intent:agent-enrollment:v1\n${payload}`);
+  return encoder.encode(`agent-intent:agent-enrollment:v${request.version}\n${payload}`);
+}
+
+function channelFromRequest(
+  request: UnsignedAgentEnrollmentRequest | Omit<AgentEnrollmentRequest, "signature">,
+): AgentEnrollmentChannelBinding {
+  const value = (request as { channel?: AgentEnrollmentChannelBinding }).channel;
+  if (value === undefined) {
+    throw new AgentIntentSdkError("Channel enrollment requests must include a channel binding.");
+  }
+  return value;
 }
 
 export function createAgentEnrollmentRequest(
@@ -53,21 +93,32 @@ export function createAgentEnrollmentRequest(
     description: string;
     source: AgentSource;
     expiresAt: string;
+    channel?: AgentEnrollmentChannelBinding;
   },
 ): AgentEnrollmentRequest {
-  const unsigned: Omit<AgentEnrollmentRequest, "signature"> = {
-    version: AGENT_ENROLLMENT_VERSION,
+  const common = {
     publicKey: identity.publicKey.toLowerCase(),
     name: input.name,
     description: input.description,
     source: input.source,
     expiresAt: input.expiresAt,
   };
+  const unsigned: UnsignedAgentEnrollmentRequest =
+    input.channel === undefined
+      ? { version: AGENT_ENROLLMENT_VERSION, ...common }
+      : {
+          version: AGENT_ENROLLMENT_CHANNEL_VERSION,
+          ...common,
+          channel: {
+            environment: input.channel.environment,
+            hostPublicKey: input.channel.hostPublicKey.toLowerCase(),
+          },
+        };
   assertEnrollmentFields(unsigned);
   const signature = bytesToHex(
     identity.signDigest(sha256Digest(canonicalAgentEnrollmentPayload(unsigned)), SIGNATURE_COMPACT),
   );
-  return { ...unsigned, signature };
+  return { ...unsigned, signature } as AgentEnrollmentRequest;
 }
 
 export function agentEnrollmentSearch(request: AgentEnrollmentRequest): Record<string, string> {
@@ -78,6 +129,12 @@ export function agentEnrollmentSearch(request: AgentEnrollmentRequest): Record<s
     description: request.description,
     source: request.source,
     expiresAt: request.expiresAt,
+    ...(request.version === AGENT_ENROLLMENT_CHANNEL_VERSION
+      ? {
+          channelEnvironment: request.channel.environment,
+          channelHost: request.channel.hostPublicKey,
+        }
+      : {}),
     signature: request.signature,
   };
 }
@@ -102,10 +159,13 @@ export function validateAgentEnrollment(
   const description = singleString(search.description);
   const source = singleString(search.source);
   const expiresAt = singleString(search.expiresAt);
+  const channelEnvironment = singleString(search.channelEnvironment);
+  const channelHost = singleString(search.channelHost);
   const signature = singleString(search.signature);
+  const channelVersion = v === AGENT_ENROLLMENT_CHANNEL_VERSION;
 
   if (
-    v !== AGENT_ENROLLMENT_VERSION ||
+    (v !== AGENT_ENROLLMENT_VERSION && !channelVersion) ||
     !publicKey ||
     !name ||
     name.trim().length === 0 ||
@@ -117,7 +177,10 @@ export function validateAgentEnrollment(
     !expiresAt ||
     !signature ||
     !isPublicKey(publicKey) ||
-    !isCompactSignature(signature)
+    !isCompactSignature(signature) ||
+    (channelVersion &&
+      (!isEnrollmentEnvironment(channelEnvironment) || !isCompressedPublicKey(channelHost))) ||
+    (!channelVersion && (channelEnvironment !== undefined || channelHost !== undefined))
   ) {
     return invalid("malformed", "This agent enrollment link is malformed or incomplete.");
   }
@@ -132,8 +195,7 @@ export function validateAgentEnrollment(
     return invalid("expired", "This agent enrollment link has expired.");
   }
 
-  const request: AgentEnrollmentRequest = {
-    version: v,
+  const common = {
     publicKey: publicKey.toLowerCase(),
     name,
     description,
@@ -141,6 +203,16 @@ export function validateAgentEnrollment(
     expiresAt,
     signature: signature.toLowerCase(),
   };
+  const request: AgentEnrollmentRequest = channelVersion
+    ? {
+        version: AGENT_ENROLLMENT_CHANNEL_VERSION,
+        ...common,
+        channel: {
+          environment: channelEnvironment as AgentEnrollmentChannelBinding["environment"],
+          hostPublicKey: (channelHost as string).toLowerCase(),
+        },
+      }
+    : { version: AGENT_ENROLLMENT_VERSION, ...common };
   try {
     const verified = secp256k1.verify(
       hexToBytes(request.signature),
@@ -159,9 +231,9 @@ export function validateAgentEnrollment(
   }
 }
 
-function assertEnrollmentFields(request: Omit<AgentEnrollmentRequest, "signature">): void {
+function assertEnrollmentFields(request: UnsignedAgentEnrollmentRequest): void {
   const validation = validateAgentEnrollment({
-    ...agentEnrollmentSearch({ ...request, signature: "00".repeat(64) }),
+    ...agentEnrollmentSearch({ ...request, signature: "00".repeat(64) } as AgentEnrollmentRequest),
   });
   if (validation.status === "invalid" && validation.reason !== "invalid-signature") {
     throw new AgentIntentSdkError(validation.message);
@@ -174,6 +246,24 @@ function singleString(value: unknown): string | undefined {
 
 function isPublicKey(value: string): boolean {
   return (value.length === 66 || value.length === 130) && HEX.test(value);
+}
+
+function isCompressedPublicKey(value: string | undefined): value is string {
+  if (value === undefined || value.length !== 66 || !HEX.test(value)) {
+    return false;
+  }
+  try {
+    secp256k1.Point.fromHex(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isEnrollmentEnvironment(
+  value: string | undefined,
+): value is AgentEnrollmentChannelBinding["environment"] {
+  return value === "staging" || value === "production";
 }
 
 function isCompactSignature(value: string): boolean {
