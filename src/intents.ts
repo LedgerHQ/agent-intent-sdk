@@ -31,6 +31,25 @@ export type SignedCreateIntent = {
   intent: Omit<SendIntent, "amount"> & { amount: string };
 };
 
+export type ApprovalIntent = {
+  type: "approval";
+  kind: "exec";
+  title: string;
+  command: string;
+  workdir?: string;
+  description?: string;
+  agentId?: string;
+  sessionKey?: string;
+  toolCallId?: string;
+};
+
+export type SignedCreateApprovalIntent = {
+  issuer: string;
+  signature: string;
+  nonce: string;
+  intent: ApprovalIntent;
+};
+
 const textEncoder = new TextEncoder();
 
 export function createNonce(
@@ -104,6 +123,47 @@ export function signCreateIntent(
     signature: bytesToHex(identity.signDigest(sha256Digest(tlvBytes), SIGNATURE_DER)),
     nonce,
     intent: normalizedIntent,
+  };
+}
+
+export function encodeApprovalIntentTlv(intent: ApprovalIntent, nonce: string): Uint8Array {
+  if (intent.kind !== "exec") {
+    throw new AgentIntentSdkError(`unsupported approval kind "${String(intent.kind)}".`);
+  }
+  const payload = concatBytes(
+    tlv(0x30, utf8(intent.kind)),
+    tlv(0x31, utf8(assertLength(intent.title, "title", 80))),
+    tlv(0x32, utf8(assertLength(intent.command, "command", 8192))),
+    optionalText(0x33, intent.workdir, "workdir", 4096),
+    intent.description === undefined
+      ? new Uint8Array()
+      : tlv(0x34, utf8(assertDescription(intent.description))),
+    optionalText(0x35, intent.agentId, "agentId", 256),
+    optionalText(0x36, intent.sessionKey, "sessionKey", 512),
+    optionalText(0x37, intent.toolCallId, "toolCallId", 256),
+  );
+  return tlv(
+    0xc1,
+    concatBytes(
+      tlv(0x01, Uint8Array.of(0x01)),
+      tlv(0x02, Uint8Array.of(0x02)),
+      tlv(0x10, payload),
+      tlv(0xda, exactHex(nonce, 16, "nonce")),
+    ),
+  );
+}
+
+export function signCreateApprovalIntent(
+  identity: AgentIdentity,
+  intent: ApprovalIntent,
+  nonce = createNonce(),
+): SignedCreateApprovalIntent {
+  const tlvBytes = encodeApprovalIntentTlv(intent, nonce);
+  return {
+    issuer: identity.publicKey,
+    signature: bytesToHex(identity.signDigest(sha256Digest(tlvBytes), SIGNATURE_DER)),
+    nonce,
+    intent,
   };
 }
 
@@ -203,6 +263,18 @@ function assertDescription(value: string): string {
     throw new AgentIntentSdkError("description must contain between 1 and 280 characters.");
   }
   return value;
+}
+
+function assertLength(value: string, label: string, max: number): string {
+  const length = Array.from(value).length;
+  if (length < 1 || length > max) {
+    throw new AgentIntentSdkError(`${label} must contain between 1 and ${max} characters.`);
+  }
+  return value;
+}
+
+function optionalText(tag: number, value: string | undefined, label: string, max: number) {
+  return value === undefined ? new Uint8Array() : tlv(tag, utf8(assertLength(value, label, max)));
 }
 
 function utf8(value: string): Uint8Array {

@@ -9,7 +9,9 @@ import { AgentIntentSdkError } from "./bytes.ts";
 import type { AgentIdentity } from "./identity.ts";
 import {
   serializeCreateIntent,
+  signCreateApprovalIntent,
   signCreateIntent,
+  type ApprovalIntent,
   type SendIntent,
   type SignedCreateIntent,
 } from "./intents.ts";
@@ -31,9 +33,22 @@ export class AgentIntentHttpError extends AgentIntentSdkError {
   }
 }
 
+export type AgentIntentRecord = {
+  id: string;
+  agentPubkey: string;
+  status: string;
+  intent: { type: string } & Record<string, unknown>;
+  approvalScope?: "once" | "always";
+  rejectionReason?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type AgentIntentClient = {
   readonly publicKey: string;
   createSendIntent(intent: SendIntent): Promise<string>;
+  createApprovalIntent(intent: ApprovalIntent): Promise<{ id: string; url: string }>;
+  getIntent(id: string): Promise<AgentIntentRecord>;
   createSignedIntent(intent: SendIntent, nonce?: string): SignedCreateIntent;
 };
 
@@ -63,32 +78,81 @@ export function createAgentIntentClient(input: {
     createSignedIntent: (intent, nonce) => signCreateIntent(input.identity, intent, nonce),
     createSendIntent: async (intent) => {
       const request = signCreateIntent(input.identity, intent);
-      const response = await tokenProvider.withAccessToken(
-        (accessToken) =>
-          fetcher(endpoint, {
-            method: "POST",
-            headers: {
-              Accept: "text/plain",
-              Authorization: `Bearer ${accessToken}`,
-              "Content-Type": "application/json",
-            },
-            body: serializeCreateIntent(request),
-          }),
-        (candidate) => candidate.status === 401,
-      );
-      const body = await response.text();
-      if (!response.ok) throw httpError(response, body);
-      try {
-        const deeplink = new URL(body);
-        return new URL(
-          `${deeplink.pathname}${deeplink.search}${deeplink.hash}`,
-          AGENT_INTENT_FRONTEND_URLS[input.environment],
-        ).toString();
-      } catch {
+      const body = await send(endpoint, "text/plain", serializeCreateIntent(request));
+      return resolveDeeplink(body).url;
+    },
+    createApprovalIntent: async (intent) => {
+      const request = signCreateApprovalIntent(input.identity, intent);
+      const body = await send(endpoint, "text/plain", JSON.stringify(request));
+      const { deeplink, url } = resolveDeeplink(body);
+      const id = deeplink.pathname.split("/").findLast((segment) => segment !== "");
+      if (id === undefined)
         throw new AgentIntentSdkError("BFF returned an invalid intent deeplink.");
-      }
+      return { id, url };
+    },
+    getIntent: async (id) => {
+      const body = await send(
+        new URL(encodeURIComponent(id), `${endpoint.href}/`),
+        "application/json",
+      );
+      return parseIntentRecord(body);
     },
   };
+
+  async function send(url: URL, accept: string, requestBody?: string): Promise<string> {
+    const response = await tokenProvider.withAccessToken(
+      (accessToken) =>
+        fetcher(url, {
+          method: requestBody === undefined ? "GET" : "POST",
+          headers: {
+            Accept: accept,
+            Authorization: `Bearer ${accessToken}`,
+            ...(requestBody === undefined ? {} : { "Content-Type": "application/json" }),
+          },
+          body: requestBody,
+        }),
+      (candidate) => candidate.status === 401,
+    );
+    const body = await response.text();
+    if (!response.ok) throw httpError(response, body);
+    return body;
+  }
+
+  function resolveDeeplink(body: string): { deeplink: URL; url: string } {
+    try {
+      const deeplink = new URL(body);
+      const url = new URL(
+        `${deeplink.pathname}${deeplink.search}${deeplink.hash}`,
+        AGENT_INTENT_FRONTEND_URLS[input.environment],
+      ).toString();
+      return { deeplink, url };
+    } catch {
+      throw new AgentIntentSdkError("BFF returned an invalid intent deeplink.");
+    }
+  }
+}
+
+function parseIntentRecord(body: string): AgentIntentRecord {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    throw new AgentIntentSdkError("BFF returned an invalid intent record.");
+  }
+  if (
+    !isRecord(parsed) ||
+    typeof parsed.id !== "string" ||
+    typeof parsed.status !== "string" ||
+    !isRecord(parsed.intent) ||
+    typeof parsed.intent.type !== "string"
+  ) {
+    throw new AgentIntentSdkError("BFF returned an invalid intent record.");
+  }
+  return parsed as AgentIntentRecord;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function staticAccessTokenProvider(accessToken: string): AccessTokenProvider {
