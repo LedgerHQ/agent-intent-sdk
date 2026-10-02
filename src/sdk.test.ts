@@ -11,6 +11,8 @@ import {
   agentEnrollmentSearch,
   canonicalAgentEnrollmentPayload,
   createAgentEnrollmentRequest,
+  isAgentSource,
+  SUPPORTED_AGENT_SOURCES,
   validateAgentEnrollment,
 } from "./enrollment.ts";
 import { createSoftwareAgentIdentity, sha256Digest } from "./identity.ts";
@@ -48,6 +50,53 @@ describe("agent enrollment", () => {
       status: "valid",
       request,
     });
+  });
+
+  it("lists every supported agent runtime source", () => {
+    expect(SUPPORTED_AGENT_SOURCES).toEqual([
+      "openclaw",
+      "hermes",
+      "claude-code",
+      "codex",
+      "cursor",
+      "muse",
+      "grok-bot",
+      "other",
+    ]);
+  });
+
+  it.each(SUPPORTED_AGENT_SOURCES)("accepts a signed request from source %s", (source) => {
+    const request = createAgentEnrollmentRequest(createSoftwareAgentIdentity(SECRET_KEY), {
+      name: "Portfolio Bot",
+      description: "Proposes portfolio operations.",
+      source,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+
+    expect(validateAgentEnrollment(agentEnrollmentSearch(request))).toEqual({
+      status: "valid",
+      request,
+    });
+  });
+
+  it.each(["trading", "Claude Code", "claude_code", "ledger-official", "", undefined, null, 42])(
+    "rejects uncontrolled source %s",
+    (source) => {
+      expect(isAgentSource(source)).toBe(false);
+    },
+  );
+
+  it("rejects a link whose source is outside the controlled list", () => {
+    const request = createAgentEnrollmentRequest(createSoftwareAgentIdentity(SECRET_KEY), {
+      name: "Portfolio Bot",
+      description: "Proposes portfolio operations.",
+      source: "hermes",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+
+    expect(
+      validateAgentEnrollment({ ...agentEnrollmentSearch(request), source: "ledger-official" }),
+    ).toMatchObject({ status: "invalid", reason: "unsupported-source" });
   });
 
   it("matches the fixed version-1 canonical request and signature vector", () => {

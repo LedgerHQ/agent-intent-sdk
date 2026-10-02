@@ -4,7 +4,21 @@ import { SIGNATURE_COMPACT, sha256Digest, type AgentIdentity } from "./identity.
 
 export const AGENT_ENROLLMENT_VERSION = "1";
 export const AGENT_ENROLLMENT_CHANNEL_VERSION = "2";
-export const SUPPORTED_AGENT_SOURCES = ["openclaw", "hermes"] as const;
+/**
+ * Controlled identifiers for the runtime an agent runs in (not its model
+ * provider). The value is self-declared and unverified, so it stays a closed
+ * list; `other` covers runtimes without a dedicated entry.
+ */
+export const SUPPORTED_AGENT_SOURCES = [
+  "openclaw",
+  "hermes",
+  "claude-code",
+  "codex",
+  "cursor",
+  "muse",
+  "grok-bot",
+  "other",
+] as const;
 
 export type AgentSource = (typeof SUPPORTED_AGENT_SOURCES)[number];
 
@@ -47,8 +61,8 @@ export type AgentEnrollmentValidation =
 const encoder = new TextEncoder();
 const HEX = /^[0-9a-f]+$/i;
 
-export function isAgentSource(value: string): value is AgentSource {
-  return (SUPPORTED_AGENT_SOURCES as readonly string[]).includes(value);
+export function isAgentSource(value: unknown): value is AgentSource {
+  return (SUPPORTED_AGENT_SOURCES as readonly unknown[]).includes(value);
 }
 
 export function canonicalAgentEnrollmentPayload(
