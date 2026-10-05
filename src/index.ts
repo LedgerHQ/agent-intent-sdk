@@ -8,7 +8,9 @@ export {
   createAgentEnrollmentChannelCandidate,
   createAgentEnrollmentChannelHost,
   type AgentEnrollmentChannelCandidate,
+  type AgentEnrollmentChannelCompletion,
   type AgentEnrollmentChannelHost,
+  type AgentEnrollmentChannelRequest,
   type AgentEnrollmentChannelTimeouts,
   type EnrollmentChannelWebSocket,
   type EnrollmentChannelWebSocketFactory,
@@ -16,3 +18,4 @@ export {
 export * from "./fingerprint.ts";
 export * from "./identity.ts";
 export * from "./intents.ts";
+export * from "./recovery.ts";

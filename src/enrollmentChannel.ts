@@ -11,6 +11,16 @@ import {
   validateAgentEnrollment,
 } from "./enrollment.ts";
 import { createSoftwareAgentIdentity } from "./identity.ts";
+import {
+  agentRecoverySearch,
+  canonicalAgentRecoveryPayload,
+  isAgentRecoveryRequest,
+  parseAgentRecoveryCompletion,
+  validateAgentRecovery,
+  type AgentRecoveryChannelRequest,
+  type AgentRecoveryCompletion,
+  type AgentRecoveryRequest,
+} from "./recovery.ts";
 
 const PROTOCOL_VERSION = 1;
 const CHANNEL_DOMAIN = new TextEncoder().encode("agent-intent:enrollment-channel:v1");
@@ -58,17 +68,36 @@ export const AGENT_ENROLLMENT_CHANNEL_DEFAULT_TIMEOUTS = {
   persistTimeoutMs: 30_000,
 } as const satisfies Required<AgentEnrollmentChannelTimeouts>;
 
+/** Signed requests whose completion can be delivered over the enrollment channel. */
+export type AgentEnrollmentChannelRequest = AgentEnrollmentRequestV2 | AgentRecoveryChannelRequest;
+
+/** Completion accepted by the host for a given channel request kind. */
+export type AgentEnrollmentChannelCompletion<
+  Request extends AgentEnrollmentChannelRequest = AgentEnrollmentChannelRequest,
+> = Request extends AgentRecoveryRequest ? AgentRecoveryCompletion : AgentEnrollmentCompletionV2;
+
 export type AgentEnrollmentChannelHost = {
   binding: AgentEnrollmentChannelBinding;
-  waitForCompletion(input: {
-    request: AgentEnrollmentRequestV2;
-    authenticate: (completion: AgentEnrollmentCompletionV2) => Promise<void>;
-    persist: (completion: AgentEnrollmentCompletionV2) => Promise<void>;
-  }): Promise<AgentEnrollmentCompletionV2>;
+  waitForCompletion<Request extends AgentEnrollmentChannelRequest>(input: {
+    request: Request;
+    authenticate: (completion: AgentEnrollmentChannelCompletion<Request>) => Promise<void>;
+    persist: (completion: AgentEnrollmentChannelCompletion<Request>) => Promise<void>;
+  }): Promise<AgentEnrollmentChannelCompletion<Request>>;
   close(): void;
 };
 
 export type AgentEnrollmentChannelCandidate = {
+  /**
+   * Opens the relay session and completes the key-confirmation handshake, then
+   * keeps the session open for a later `deliver()`. Resolves once the host is
+   * reachable. Repeated calls share the open session.
+   */
+  connect(): Promise<void>;
+  /**
+   * Sends the serialized completion and resolves once the host acknowledges it.
+   * Connects first when no session is open. After a rejection the candidate may
+   * retry on a fresh session while the signed request is unexpired.
+   */
   deliver(completionPayload: string): Promise<void>;
   close(): void;
 };
@@ -101,7 +130,14 @@ export function createAgentEnrollmentChannelHost(input: {
       } catch (error) {
         return Promise.reject(asChannelError(error));
       }
-      return runHost(socket, identity, request, authenticate, persist, timeouts);
+      return runHost(
+        socket,
+        identity,
+        request,
+        authenticate as (completion: AgentEnrollmentChannelCompletion) => Promise<void>,
+        persist as (completion: AgentEnrollmentChannelCompletion) => Promise<void>,
+        timeouts,
+      ) as Promise<AgentEnrollmentChannelCompletion<typeof request>>;
     },
     close: () => {
       closed = true;
@@ -111,7 +147,7 @@ export function createAgentEnrollmentChannelHost(input: {
 }
 
 export function createAgentEnrollmentChannelCandidate(input: {
-  request: AgentEnrollmentRequestV2;
+  request: AgentEnrollmentChannelRequest;
   relayBaseUrl: string;
   webSocketFactory?: EnrollmentChannelWebSocketFactory;
   now?: Date;
@@ -119,31 +155,56 @@ export function createAgentEnrollmentChannelCandidate(input: {
 }): AgentEnrollmentChannelCandidate {
   assertCandidateRequest(input.request, input.now ?? new Date());
 
-  const identity = createSoftwareAgentIdentity();
-  const publisher = identity.publicKey;
   const timeouts = resolveTimeouts(input.timeouts);
-  let used = false;
+  let session: CandidateSession | undefined;
+  let delivering = false;
+  let delivered = false;
   let closed = false;
-  let socket: EnrollmentChannelWebSocket | undefined;
 
-  return {
-    deliver: (completionPayload) => {
-      if (used) throw channelError("This enrollment completion has already been sent.");
-      if (closed) throw channelError("This enrollment completion channel has been closed.");
-      assertCandidateRequest(input.request, new Date());
-      used = true;
+  const assertUsable = () => {
+    if (delivered) throw channelError("This enrollment completion has already been sent.");
+    if (closed) throw channelError("This enrollment completion channel has been closed.");
+    assertCandidateRequest(input.request, new Date());
+  };
+  const connectSession = (): Promise<CandidateSession> => {
+    if (session === undefined || session.failed) {
       try {
-        socket = socketFactory(input.webSocketFactory)(
-          relayUrl(input.relayBaseUrl, input.request.channel.hostPublicKey),
+        session = openCandidateSession(
+          socketFactory(input.webSocketFactory)(
+            relayUrl(input.relayBaseUrl, input.request.channel.hostPublicKey),
+          ),
+          input.request,
+          timeouts,
         );
       } catch (error) {
         return Promise.reject(asChannelError(error));
       }
-      return runCandidate(socket, identity, publisher, input.request, completionPayload, timeouts);
+    }
+    const active = session;
+    return active.ready.then(() => active);
+  };
+
+  return {
+    connect: () => {
+      assertUsable();
+      return connectSession().then(() => undefined);
+    },
+    deliver: (completionPayload) => {
+      if (delivering) throw channelError("This enrollment completion is already being sent.");
+      assertUsable();
+      delivering = true;
+      return connectSession()
+        .then((active) => active.deliver(completionPayload))
+        .then(() => {
+          delivered = true;
+        })
+        .finally(() => {
+          delivering = false;
+        });
     },
     close: () => {
       closed = true;
-      socket?.close();
+      session?.close();
     },
   };
 }
@@ -151,11 +212,11 @@ export function createAgentEnrollmentChannelCandidate(input: {
 function runHost(
   socket: EnrollmentChannelWebSocket,
   identity: ReturnType<typeof createSoftwareAgentIdentity>,
-  request: AgentEnrollmentRequestV2,
-  authenticate: (completion: AgentEnrollmentCompletionV2) => Promise<void>,
-  persist: (completion: AgentEnrollmentCompletionV2) => Promise<void>,
+  request: AgentEnrollmentChannelRequest,
+  authenticate: (completion: AgentEnrollmentChannelCompletion) => Promise<void>,
+  persist: (completion: AgentEnrollmentChannelCompletion) => Promise<void>,
   timeouts: Required<AgentEnrollmentChannelTimeouts>,
-): Promise<AgentEnrollmentCompletionV2> {
+): Promise<AgentEnrollmentChannelCompletion> {
   return new Promise((resolve, reject) => {
     let state:
       | "connected"
@@ -236,7 +297,12 @@ function runHost(
           if (envelope.message === "Failure")
             throw channelError("The enrollment relay rejected the session.");
 
-          if (state === "connected" && envelope.message === "InitiateHandshake") {
+          // A new candidate may replace one that has not delivered yet, so a frontend
+          // that lost its relay socket while waiting for device approval can reconnect.
+          if (
+            envelope.message === "InitiateHandshake" &&
+            (state === "connected" || state === "challenged" || state === "authenticated")
+          ) {
             const candidatePublicKey = stringField(envelope.payload, "ephemeral_public_key");
             if (candidatePublicKey.toLowerCase() !== envelope.publisher.toLowerCase()) {
               throw channelError("Enrollment channel publisher does not match its ephemeral key.");
@@ -281,10 +347,7 @@ function runHost(
             const activeCipher = requireCipher(cipher);
             const payload = await decryptPayload(activeCipher, envelope, request);
             const serialized = stringField(payload, "completion");
-            const completion = parseAgentEnrollmentCompletion(serialized, request.publicKey);
-            if (completion.version !== 2) {
-              throw channelError("The enrollment channel requires completion version 2.");
-            }
+            const completion = parseChannelCompletion(serialized, request);
             try {
               await withinDeadline(
                 () => authenticate(completion),
@@ -335,126 +398,171 @@ function runHost(
   });
 }
 
-function runCandidate(
+type CandidateSession = {
+  /** Settles once the handshake completes or the session fails. */
+  readonly ready: Promise<void>;
+  readonly failed: boolean;
+  deliver(completionPayload: string): Promise<void>;
+  close(): void;
+};
+
+function openCandidateSession(
   socket: EnrollmentChannelWebSocket,
-  identity: ReturnType<typeof createSoftwareAgentIdentity>,
-  publisher: string,
-  request: AgentEnrollmentRequestV2,
-  completionPayload: string,
+  request: AgentEnrollmentChannelRequest,
   timeouts: Required<AgentEnrollmentChannelTimeouts>,
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let state: "connecting" | "initiated" | "confirmed" | "sent" | "finished" = "connecting";
-    let cipher: ChannelCipher | undefined;
-    let phaseTimer: ReturnType<typeof setTimeout> | undefined;
-    let messageQueue = Promise.resolve();
+): CandidateSession {
+  // Each session uses its own ephemeral key so a reconnect never shares a channel key.
+  const identity = createSoftwareAgentIdentity();
+  const publisher = identity.publicKey;
+  let state: "connecting" | "initiated" | "confirmed" | "ready" | "sent" | "finished" | "failed" =
+    "connecting";
+  let cipher: ChannelCipher | undefined;
+  let failure: AgentIntentSdkError | undefined;
+  let phaseTimer: ReturnType<typeof setTimeout> | undefined;
+  let messageQueue = Promise.resolve();
+  let delivery:
+    | { digest: string; resolve: () => void; reject: (reason: unknown) => void }
+    | undefined;
+  let resolveReady: () => void = () => undefined;
+  let rejectReady: (reason: unknown) => void = () => undefined;
+  const ready = new Promise<void>((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
+  // Callers observe failures through connect()/deliver(); an idle session must not leak a rejection.
+  ready.catch(() => undefined);
 
-    const fail = failChannel(
-      socket,
-      reject,
-      () => state === "finished",
-      () => {
-        state = "finished";
-        clearTimeout(phaseTimer);
-        clearTimeout(completionTimer);
-      },
-    );
-    const completionTimer = deadlineTimer(timeouts.completionTimeoutMs, request.expiresAt, () =>
-      fail(channelError("Enrollment completion delivery timed out.")),
-    );
-    phaseTimer = deadlineTimer(timeouts.handshakeTimeoutMs, request.expiresAt, () =>
-      fail(channelError("Enrollment channel handshake timed out.")),
-    );
-    socket.addEventListener("error", () =>
-      fail(channelError("Enrollment relay connection failed.")),
-    );
-    socket.addEventListener("close", () =>
-      fail(channelError("Enrollment relay closed before completion was acknowledged.")),
-    );
-    socket.addEventListener("open", () => {
-      if (state !== "connecting") return;
-      try {
-        send(socket, {
-          version: PROTOCOL_VERSION,
-          publisher,
-          message: "InitiateHandshake",
-          payload: { ephemeral_public_key: publisher },
-        });
-        state = "initiated";
-      } catch (error) {
-        fail(error);
-      }
-    });
-    socket.addEventListener("message", (event) => {
-      messageQueue = messageQueue
-        .then(async () => {
-          const envelope = parseEnvelope(event.data);
-          if (envelope.publisher.toLowerCase() !== request.channel.hostPublicKey.toLowerCase()) {
-            throw channelError("Enrollment channel host does not match the signed request.");
-          }
-          if (envelope.message === "Failure") {
-            if (cipher && "encrypted" in envelope.payload) {
-              await decryptPayload(cipher, envelope, request);
-              throw channelError("The enrollment host rejected this completion.");
-            }
-            throw channelError("The enrollment relay rejected the session.");
-          }
-
-          if (state === "initiated" && envelope.message === "HandshakeChallenge") {
-            cipher = await makeCipher(
-              identity.deriveSharedSecret(hexToBytes(request.channel.hostPublicKey)),
-              request,
+  const fail = failChannel(
+    socket,
+    (error) => {
+      failure = asChannelError(error);
+      rejectReady(failure);
+      delivery?.reject(failure);
+    },
+    () => state === "finished",
+    () => {
+      state = "failed";
+      clearTimeout(phaseTimer);
+      clearTimeout(sessionTimer);
+    },
+  );
+  // Bounds the whole session, including the device-approval gap between connect() and deliver().
+  const sessionTimer = deadlineTimer(timeouts.completionTimeoutMs, request.expiresAt, () =>
+    fail(channelError("Enrollment completion delivery timed out.")),
+  );
+  phaseTimer = deadlineTimer(timeouts.handshakeTimeoutMs, request.expiresAt, () =>
+    fail(channelError("Enrollment channel handshake timed out.")),
+  );
+  socket.addEventListener("error", () => fail(channelError("Enrollment relay connection failed.")));
+  socket.addEventListener("close", () =>
+    fail(channelError("Enrollment relay closed before completion was acknowledged.")),
+  );
+  socket.addEventListener("open", () => {
+    if (state !== "connecting") return;
+    try {
+      send(socket, {
+        version: PROTOCOL_VERSION,
+        publisher,
+        message: "InitiateHandshake",
+        payload: { ephemeral_public_key: publisher },
+      });
+      state = "initiated";
+    } catch (error) {
+      fail(error);
+    }
+  });
+  socket.addEventListener("message", (event) => {
+    messageQueue = messageQueue
+      .then(async () => {
+        const envelope = parseEnvelope(event.data);
+        if (envelope.publisher.toLowerCase() !== request.channel.hostPublicKey.toLowerCase()) {
+          throw channelError("Enrollment channel host does not match the signed request.");
+        }
+        if (envelope.message === "Failure") {
+          if (cipher && "encrypted" in envelope.payload) {
+            await decryptPayload(cipher, envelope, request);
+            throw channelError(
+              state === "sent"
+                ? "The enrollment host rejected this completion."
+                : "The enrollment host reset this session.",
             );
-            const challenge = await decryptPayload(cipher, envelope, request);
-            await sendEncrypted(socket, publisher, "CompleteHandshakeChallenge", cipher, request, {
-              digits: stringField(challenge, "digits"),
-            });
-            state = "confirmed";
-            return;
           }
+          throw channelError("The enrollment relay rejected the session.");
+        }
 
-          if (state === "confirmed" && envelope.message === "HandshakeCompletionSucceeded") {
-            const activeCipher = requireCipher(cipher);
-            await decryptPayload(activeCipher, envelope, request);
+        if (state === "initiated" && envelope.message === "HandshakeChallenge") {
+          cipher = await makeCipher(
+            identity.deriveSharedSecret(hexToBytes(request.channel.hostPublicKey)),
+            request,
+          );
+          const challenge = await decryptPayload(cipher, envelope, request);
+          await sendEncrypted(socket, publisher, "CompleteHandshakeChallenge", cipher, request, {
+            digits: stringField(challenge, "digits"),
+          });
+          state = "confirmed";
+          return;
+        }
+
+        if (state === "confirmed" && envelope.message === "HandshakeCompletionSucceeded") {
+          await decryptPayload(requireCipher(cipher), envelope, request);
+          clearTimeout(phaseTimer);
+          state = "ready";
+          resolveReady();
+          return;
+        }
+
+        if (state === "sent" && envelope.message === "TrustchainAddedMember") {
+          const acknowledgement = await decryptPayload(cipher, envelope, request);
+          if (
+            acknowledgement.acknowledged !== true ||
+            stringField(acknowledgement, "digest") !== delivery?.digest
+          ) {
+            throw channelError("Enrollment completion acknowledgement is invalid.");
+          }
+          state = "finished";
+          clearTimeout(phaseTimer);
+          clearTimeout(sessionTimer);
+          socket.close();
+          delivery.resolve();
+          return;
+        }
+
+        throw channelError(`Unexpected ${envelope.message} enrollment channel message.`);
+      })
+      .catch(fail);
+  });
+
+  return {
+    ready,
+    get failed() {
+      return state === "failed";
+    },
+    deliver: (completionPayload) =>
+      new Promise<void>((resolve, reject) => {
+        if (state !== "ready") {
+          reject(failure ?? channelError("Enrollment channel is not connected."));
+          return;
+        }
+        state = "sent";
+        delivery = { digest: completionDigest(completionPayload), resolve, reject };
+        messageQueue = messageQueue
+          .then(async () => {
             await sendEncrypted(
               socket,
               publisher,
               "TrustchainShareCredential",
-              activeCipher,
+              requireCipher(cipher),
               request,
-              {
-                completion: completionPayload,
-              },
+              { completion: completionPayload },
             );
-            clearTimeout(phaseTimer);
             phaseTimer = deadlineTimer(timeouts.acknowledgementTimeoutMs, request.expiresAt, () =>
               fail(channelError("Enrollment completion acknowledgement timed out.")),
             );
-            state = "sent";
-            return;
-          }
-
-          if (state === "sent" && envelope.message === "TrustchainAddedMember") {
-            const acknowledgement = await decryptPayload(cipher, envelope, request);
-            if (
-              acknowledgement.acknowledged !== true ||
-              stringField(acknowledgement, "digest") !== completionDigest(completionPayload)
-            ) {
-              throw channelError("Enrollment completion acknowledgement is invalid.");
-            }
-            state = "finished";
-            clearTimeout(phaseTimer);
-            clearTimeout(completionTimer);
-            socket.close();
-            resolve();
-            return;
-          }
-
-          throw channelError(`Unexpected ${envelope.message} enrollment channel message.`);
-        })
-        .catch(fail);
-    });
-  });
+          })
+          .catch(fail);
+      }),
+    close: () => fail(channelError("This enrollment completion channel has been closed.")),
+  };
 }
 
 type ChannelCipher = {
@@ -464,7 +572,7 @@ type ChannelCipher = {
 
 async function makeCipher(
   sharedSecret: Uint8Array,
-  request: AgentEnrollmentRequestV2,
+  request: AgentEnrollmentChannelRequest,
 ): Promise<ChannelCipher> {
   const requestDigest = signedRequestDigest(request);
   const keyBytes = deriveChannelKeyBytes(sharedSecret, requestDigest);
@@ -502,7 +610,7 @@ async function encryptPayload(
 async function decryptPayload(
   cipher: ChannelCipher | undefined,
   envelope: RelayEnvelope,
-  request: AgentEnrollmentRequestV2,
+  request: AgentEnrollmentChannelRequest,
 ): Promise<Record<string, unknown>> {
   if (!cipher) throw channelError("Enrollment channel encryption is not initialized.");
   if (!constantTimeEqual(cipher.requestDigest, signedRequestDigest(request))) {
@@ -542,7 +650,7 @@ async function sendEncrypted(
   publisher: string,
   message: Exclude<RelayMessageName, "InitiateHandshake">,
   cipher: ChannelCipher,
-  request: AgentEnrollmentRequestV2,
+  request: AgentEnrollmentChannelRequest,
   payload: object,
 ): Promise<void> {
   if (!constantTimeEqual(cipher.requestDigest, signedRequestDigest(request))) {
@@ -642,10 +750,12 @@ function completionDigest(payload: string): string {
   return bytesToHex(sha256(new TextEncoder().encode(payload)));
 }
 
-function signedRequestDigest(request: AgentEnrollmentRequestV2): Uint8Array {
+function signedRequestDigest(request: AgentEnrollmentChannelRequest): Uint8Array {
   return sha256(
     concatBytes(
-      canonicalAgentEnrollmentPayload(request),
+      isAgentRecoveryRequest(request)
+        ? canonicalAgentRecoveryPayload(request)
+        : canonicalAgentEnrollmentPayload(request),
       new Uint8Array([0]),
       hexToBytes(request.signature),
     ),
@@ -707,7 +817,7 @@ function failChannel(
 }
 
 function assertHostRequest(
-  request: AgentEnrollmentRequestV2,
+  request: AgentEnrollmentChannelRequest,
   environment: AgentEnrollmentChannelBinding["environment"],
   hostPublicKey: string,
 ): void {
@@ -720,11 +830,17 @@ function assertHostRequest(
   }
 }
 
-function assertCandidateRequest(request: AgentEnrollmentRequestV2, now: Date): void {
-  if (request.version !== AGENT_ENROLLMENT_CHANNEL_VERSION) {
+function assertCandidateRequest(request: AgentEnrollmentChannelRequest, now: Date): void {
+  const recovery = isAgentRecoveryRequest(request);
+  if (
+    (!recovery && request.version !== AGENT_ENROLLMENT_CHANNEL_VERSION) ||
+    (request as { channel?: unknown }).channel === undefined
+  ) {
     throw channelError("Automatic completion requires an enrollment channel request.");
   }
-  const validation = validateAgentEnrollment(agentEnrollmentSearch(request), now);
+  const validation = recovery
+    ? validateAgentRecovery(agentRecoverySearch(request), now)
+    : validateAgentEnrollment(agentEnrollmentSearch(request), now);
   if (validation.status === "invalid") {
     throw channelError(
       validation.reason === "expired"
@@ -732,6 +848,25 @@ function assertCandidateRequest(request: AgentEnrollmentRequestV2, now: Date): v
         : "The enrollment channel request is not authentic.",
     );
   }
+}
+
+function parseChannelCompletion(
+  serialized: string,
+  request: AgentEnrollmentChannelRequest,
+): AgentEnrollmentChannelCompletion {
+  if (isAgentRecoveryRequest(request)) {
+    return parseAgentRecoveryCompletion(
+      serialized,
+      request.publicKey,
+      request.previousTrustchainId,
+      request.signature,
+    );
+  }
+  const completion = parseAgentEnrollmentCompletion(serialized, request.publicKey);
+  if (completion.version !== 2) {
+    throw channelError("The enrollment channel requires completion version 2.");
+  }
+  return completion;
 }
 
 function resolveTimeouts(
@@ -793,17 +928,17 @@ function toArrayBuffer(value: Uint8Array): ArrayBuffer {
 
 /** @internal Protocol-vector helpers. Not exported from the package root. */
 export const enrollmentChannelCryptoVectors = {
-  signedRequestDigest: (request: AgentEnrollmentRequestV2): string =>
+  signedRequestDigest: (request: AgentEnrollmentChannelRequest): string =>
     bytesToHex(signedRequestDigest(request)),
-  deriveKey: (sharedSecret: Uint8Array, request: AgentEnrollmentRequestV2): string =>
+  deriveKey: (sharedSecret: Uint8Array, request: AgentEnrollmentChannelRequest): string =>
     bytesToHex(deriveChannelKeyBytes(sharedSecret, signedRequestDigest(request))),
   aad: (
-    request: AgentEnrollmentRequestV2,
+    request: AgentEnrollmentChannelRequest,
     envelope: Pick<RelayEnvelope, "version" | "publisher" | "message">,
   ): string => new TextDecoder().decode(envelopeAad(envelope, signedRequestDigest(request))),
   encrypt: async (
     sharedSecret: Uint8Array,
-    request: AgentEnrollmentRequestV2,
+    request: AgentEnrollmentChannelRequest,
     envelope: Pick<RelayEnvelope, "version" | "publisher" | "message">,
     payload: object,
     nonce: Uint8Array,

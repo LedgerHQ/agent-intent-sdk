@@ -102,21 +102,72 @@ await host.waitForCompletion({
 
 The browser validates the signed request, derives its trusted relay origin from
 the signed environment, and uses `createAgentEnrollmentChannelCandidate()` to
-deliver the serialized version-2 completion. Version-1 URLs and manual
-completion parsing remain supported.
+deliver the serialized completion. The encrypted channel is the only delivery
+path for version-2 and channel-bound recovery requests.
+
+The candidate separates reaching the agent from delivering to it, so device
+work only starts once the agent is known to be listening:
+
+```ts
+const candidate = createAgentEnrollmentChannelCandidate({ request, relayBaseUrl });
+
+await candidate.connect(); // relay socket + key-confirmation handshake
+const completion = await approveOnLedgerDevice(); // may take minutes
+await candidate.deliver(completion); // resolves after the host acknowledges
+```
+
+`deliver()` connects implicitly when `connect()` was not called or the session
+was lost (for example, the relay dropped the socket during device approval).
+If a delivery fails, for example because `authenticate` rejected it or the
+acknowledgement timed out, `deliver()` may be retried on the same candidate. Each
+retry opens a fresh session with a new ephemeral key, and a newly connecting
+candidate replaces one that has not delivered yet. A retry fails once the host has
+finished, closed, or timed out.
+
+### Recovery
+
+A recovery request re-enrolls an existing agent key into its previous App-18
+Trustchain. Its `source` is an `AgentRecoverySource` (`openclaw` or `hermes`;
+see `isAgentRecoverySource`). Bind it to a channel host the same way:
+
+```ts
+const request = createAgentRecoveryRequest(identity, {
+  name,
+  description,
+  source,
+  previousTrustchainId,
+  expiresAt,
+  channel: host.binding,
+});
+console.log(createAgentRecoveryUrl(frontendUrl, request));
+
+const completion = await host.waitForCompletion({ request, authenticate, persist });
+// completion: { version: 3, recovery: true, trustchainId, previousTrustchainId, ... }
+```
+
+For a recovery request, the host accepts only a version-3 recovery completion
+whose agent key, previous Trustchain, and request signature match the signed
+request, and whose `trustchainId` equals `previousTrustchainId`. For a version-2
+request it accepts only a version-2 completion. `serializeAgentRecoveryCompletion`,
+`parseAgentRecoveryCompletion`, and `validateAgentRecovery` are exported for the
+frontend. The channel binding is optional and signed; an unbound recovery
+request keeps its earlier canonical bytes.
+
+### Security and timeouts
 
 The channel key and every encrypted envelope are bound to the exact signed
 request and envelope metadata. Handshake, completion, persistence, and
 acknowledgement waits are bounded and capped by the signed request expiry.
-The host allows 15 minutes for the user to finish Ledger approval and for the
-frontend candidate to connect. After that connection, the cryptographic
-handshake, persistence, and acknowledgement defaults are 30 seconds each; the
-overall completion remains capped at 15 minutes. Applications may override them
-with the `timeouts` option. A failed `authenticate` call rejects only that
-candidate so a later valid browser can complete the same bounded host session.
-A persistence failure closes the session without acknowledging; if enrollment
-was committed before delivery failed, recover with the frontend's manual
-completion payload.
+The host allows 15 minutes for the frontend candidate to connect. After a
+candidate connects, the cryptographic handshake, persistence, and
+acknowledgement defaults are 30 seconds each. The wait between a completed
+handshake and the delivered completion (device approval) is bounded only by
+`completionTimeoutMs` (15 minutes) and the request expiry, on both the host and
+the candidate. Applications may override these with the `timeouts` option. A
+failed `authenticate` call rejects only that delivery, so the same or a later
+candidate can complete the same bounded host session. A persistence failure
+closes the session without acknowledging. If enrollment was committed before
+delivery failed, re-enroll the agent with a channel-bound recovery request.
 
 The channel sends only the agent public key, App-18 Trustchain ID, and safe
 App-16 environment/root/path references. It must never carry a serialized

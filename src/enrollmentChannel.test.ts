@@ -17,6 +17,7 @@ import {
 } from "./enrollmentChannel.ts";
 import { createSoftwareAgentIdentity } from "./identity.ts";
 import * as packageExports from "./index.ts";
+import { createAgentRecoveryRequest, serializeAgentRecoveryCompletion } from "./recovery.ts";
 
 const RELAY_URL = "https://trustchain.example";
 
@@ -183,7 +184,7 @@ describe("encrypted enrollment channel", () => {
     await expect(received).resolves.toMatchObject({ trustchainId: "trusted" });
     expect(authenticate).toHaveBeenCalledTimes(2);
     expect(persist).toHaveBeenCalledOnce();
-    expect(() => invalidCandidate.deliver(completionFor(agent.publicKey, "untrusted"))).toThrow(
+    expect(() => validCandidate.deliver(completionFor(agent.publicKey, "trusted"))).toThrow(
       /already been sent/,
     );
     expect(() =>
@@ -360,7 +361,7 @@ describe("encrypted enrollment channel", () => {
     expect(relay.sockets.every((socket) => socket.closed)).toBe(true);
   });
 
-  it("times out a missing acknowledgement and rejects replay", async () => {
+  it("times out a missing acknowledgement and fails a retry once the host is gone", async () => {
     const relay = new TestRelay("TrustchainAddedMember");
     const agent = createSoftwareAgentIdentity();
     const host = createAgentEnrollmentChannelHost({
@@ -386,7 +387,7 @@ describe("encrypted enrollment channel", () => {
 
     await expect(received).resolves.toBeDefined();
     await expect(delivery).rejects.toThrow(/acknowledgement timed out/);
-    expect(() => candidate.deliver(payload)).toThrow(/already been sent/);
+    await expect(candidate.deliver(payload)).rejects.toThrow(/timed out/);
     expect(relay.sockets.every((socket) => socket.closed)).toBe(true);
   });
 
@@ -476,6 +477,311 @@ describe("encrypted enrollment channel", () => {
     expect(() => candidate.deliver(completionFor(agent.publicKey, "trusted"))).toThrow(/closed/);
   });
 
+  it("connects before device approval and delivers over the same session afterwards", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2098-01-01T00:00:00.000Z"));
+    const relay = new TestRelay();
+    const agent = createSoftwareAgentIdentity();
+    const timeouts = {
+      ...shortTimeouts(),
+      candidateTimeoutMs: 200,
+      completionTimeoutMs: 10 * 60_000,
+    };
+    const host = createAgentEnrollmentChannelHost({
+      environment: "production",
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+      timeouts,
+    });
+    const request = channelRequest(agent, host.binding);
+    const waiting = host.waitForCompletion({
+      request,
+      authenticate: async () => undefined,
+      persist: async () => undefined,
+    });
+    const candidate = createAgentEnrollmentChannelCandidate({
+      request,
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+      timeouts,
+    });
+
+    const connected = candidate.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(connected).resolves.toBeUndefined();
+    await expect(candidate.connect()).resolves.toBeUndefined();
+    expect(relay.sockets).toHaveLength(2);
+
+    // Device approval: far beyond the handshake and candidate windows.
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(relay.sockets.some((socket) => socket.closed)).toBe(false);
+
+    const delivering = candidate.deliver(completionFor(agent.publicKey, "trusted"));
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(delivering).resolves.toBeUndefined();
+    await expect(waiting).resolves.toMatchObject({ trustchainId: "trusted" });
+    expect(relay.sockets).toHaveLength(2);
+  });
+
+  it("bounds an idle connected session by the completion timeout", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2098-01-01T00:00:00.000Z"));
+    const relay = new TestRelay();
+    const agent = createSoftwareAgentIdentity();
+    const timeouts = { ...shortTimeouts(), completionTimeoutMs: 1_000 };
+    const host = createAgentEnrollmentChannelHost({
+      environment: "production",
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+      timeouts,
+    });
+    const request = channelRequest(agent, host.binding);
+    const waiting = host.waitForCompletion({
+      request,
+      authenticate: async () => undefined,
+      persist: async () => undefined,
+    });
+    const hostResult = expect(waiting).rejects.toThrow(/completion timed out/);
+    const candidate = createAgentEnrollmentChannelCandidate({
+      request,
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+      timeouts,
+    });
+    const connected = candidate.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    await connected;
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await hostResult;
+    expect(relay.sockets.every((socket) => socket.closed)).toBe(true);
+  });
+
+  it("reconnects implicitly when the relay drops the session before delivery", async () => {
+    const relay = new TestRelay();
+    const agent = createSoftwareAgentIdentity();
+    const host = createAgentEnrollmentChannelHost({
+      environment: "production",
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+    });
+    const request = channelRequest(agent, host.binding);
+    const waiting = host.waitForCompletion({
+      request,
+      authenticate: async () => undefined,
+      persist: async () => undefined,
+    });
+    const candidate = createAgentEnrollmentChannelCandidate({
+      request,
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+    });
+
+    await candidate.connect();
+    relay.sockets[1]?.close();
+    await vi.waitFor(() => expect(relay.sockets[1]?.closed).toBe(true));
+
+    await expect(
+      candidate.deliver(completionFor(agent.publicKey, "trusted")),
+    ).resolves.toBeUndefined();
+    await expect(waiting).resolves.toMatchObject({ trustchainId: "trusted" });
+    expect(relay.sockets).toHaveLength(3);
+  });
+
+  it("retries delivery on the same candidate after the host rejects it", async () => {
+    const relay = new TestRelay();
+    const agent = createSoftwareAgentIdentity();
+    const host = createAgentEnrollmentChannelHost({
+      environment: "production",
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+    });
+    const request = channelRequest(agent, host.binding);
+    const authenticate = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error("Keycloak unavailable"))
+      .mockResolvedValue(undefined);
+    const persist = vi.fn(async () => undefined);
+    const waiting = host.waitForCompletion({ request, authenticate, persist });
+    const candidate = createAgentEnrollmentChannelCandidate({
+      request,
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+    });
+    const payload = completionFor(agent.publicKey, "trusted");
+
+    await candidate.connect();
+    await expect(candidate.deliver(payload)).rejects.toThrow(/host rejected/);
+    expect(persist).not.toHaveBeenCalled();
+
+    await expect(candidate.deliver(payload)).resolves.toBeUndefined();
+    await expect(waiting).resolves.toMatchObject({ trustchainId: "trusted" });
+    expect(authenticate).toHaveBeenCalledTimes(2);
+    expect(persist).toHaveBeenCalledOnce();
+    expect(() => candidate.deliver(payload)).toThrow(/already been sent/);
+    expect(() => candidate.connect()).toThrow(/already been sent/);
+  });
+
+  it("rejects concurrent deliveries and connecting after close", async () => {
+    const relay = new TestRelay();
+    const agent = createSoftwareAgentIdentity();
+    const host = createAgentEnrollmentChannelHost({
+      environment: "production",
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+    });
+    const request = channelRequest(agent, host.binding);
+    const waiting = host.waitForCompletion({
+      request,
+      authenticate: async () => undefined,
+      persist: async () => undefined,
+    });
+    const candidate = createAgentEnrollmentChannelCandidate({
+      request,
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+    });
+    const payload = completionFor(agent.publicKey, "trusted");
+
+    const delivering = candidate.deliver(payload);
+    expect(() => candidate.deliver(payload)).toThrow(/already being sent/);
+    await delivering;
+    await waiting;
+
+    const closedCandidate = createAgentEnrollmentChannelCandidate({
+      request,
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+    });
+    closedCandidate.close();
+    expect(() => closedCandidate.connect()).toThrow(/closed/);
+  });
+
+  it("delivers a recovery completion over a recovery request's channel", async () => {
+    const relay = new TestRelay();
+    const agent = createSoftwareAgentIdentity();
+    const host = createAgentEnrollmentChannelHost({
+      environment: "production",
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+    });
+    const request = recoveryChannelRequest(agent, host.binding);
+    const persist = vi.fn(async (completion: { recovery: true; trustchainId: string }) => {
+      expect(completion.recovery).toBe(true);
+    });
+    const waiting = host.waitForCompletion({
+      request,
+      authenticate: async () => undefined,
+      persist,
+    });
+    const candidate = createAgentEnrollmentChannelCandidate({
+      request,
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+    });
+
+    await candidate.connect();
+    await expect(
+      candidate.deliver(
+        serializeAgentRecoveryCompletion({
+          agentPubkey: agent.publicKey,
+          previousTrustchainId: "app-18-root",
+          requestSignature: request.signature,
+          trustchainId: "app-18-root",
+        }),
+      ),
+    ).resolves.toBeUndefined();
+    await expect(waiting).resolves.toEqual({
+      version: 3,
+      recovery: true,
+      agentPubkey: agent.publicKey,
+      previousTrustchainId: "app-18-root",
+      requestSignature: request.signature,
+      trustchainId: "app-18-root",
+    });
+    expect(persist).toHaveBeenCalledOnce();
+  });
+
+  it("rejects completions that do not match the channel request kind", async () => {
+    const relay = new TestRelay();
+    const agent = createSoftwareAgentIdentity();
+    const host = createAgentEnrollmentChannelHost({
+      environment: "production",
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+    });
+    const request = recoveryChannelRequest(agent, host.binding);
+    const persist = vi.fn(async () => undefined);
+    const waiting = host.waitForCompletion({
+      request,
+      authenticate: async () => undefined,
+      persist,
+    });
+    const hostFailure = vi.fn();
+    void waiting.catch(hostFailure);
+    const candidate = createAgentEnrollmentChannelCandidate({
+      request,
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+    });
+
+    await expect(candidate.deliver(completionFor(agent.publicKey, "app-18-root"))).rejects.toThrow(
+      /host rejected/,
+    );
+    await expect(
+      candidate.deliver(
+        serializeAgentRecoveryCompletion({
+          agentPubkey: agent.publicKey,
+          previousTrustchainId: "app-18-root",
+          requestSignature: "ab".repeat(64),
+          trustchainId: "app-18-root",
+        }),
+      ),
+    ).rejects.toThrow(/host rejected/);
+    expect(persist).not.toHaveBeenCalled();
+    expect(hostFailure).not.toHaveBeenCalled();
+    host.close();
+  });
+
+  it("requires a channel binding on recovery requests", () => {
+    const agent = createSoftwareAgentIdentity();
+    const request = createAgentRecoveryRequest(agent, {
+      name: "Portfolio Bot",
+      description: "Proposes portfolio operations.",
+      source: "openclaw",
+      previousTrustchainId: "app-18-root",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+
+    expect(() =>
+      createAgentEnrollmentChannelCandidate({
+        request: request as Parameters<typeof createAgentEnrollmentChannelCandidate>[0]["request"],
+        relayBaseUrl: RELAY_URL,
+        webSocketFactory: new TestRelay().factory,
+      }),
+    ).toThrow(/requires an enrollment channel request/);
+  });
+
+  it("binds recovery channel keys to the signed recovery request", () => {
+    const agent = createSoftwareAgentIdentity("00".repeat(31) + "01");
+    const hostIdentity = createSoftwareAgentIdentity("00".repeat(31) + "02");
+    const request = recoveryChannelRequest(agent, {
+      environment: "production",
+      hostPublicKey: hostIdentity.publicKey,
+    });
+    const sharedSecret = agent.deriveSharedSecret(hexToBytes(hostIdentity.publicKey));
+
+    expect(request.signature).toMatchInlineSnapshot(
+      `"c2e202c6541d321330299d1dcea72653bc3898d068e06c68bef704dacb46acf670a8d73d8865fda940ce5d60d73f6c4312ad66ac11a8d736a0a36e14bacb7052"`,
+    );
+    expect(enrollmentChannelCryptoVectors.signedRequestDigest(request)).toMatchInlineSnapshot(
+      `"08c6829e3d5e5d1f7d2151e7dd4dcc102266025cb7f665a75beb347e38742994"`,
+    );
+    expect(enrollmentChannelCryptoVectors.deriveKey(sharedSecret, request)).toMatchInlineSnapshot(
+      `"69bfe9b5e4be0cc413632e433e03cb77adeeb44e3aef1ec20f51f518c9cb96a1"`,
+    );
+  });
+
   it("matches fixed request, ECDH, KDF, AAD, and AES-GCM vectors", async () => {
     const agent = createSoftwareAgentIdentity("00".repeat(31) + "01");
     const hostIdentity = createSoftwareAgentIdentity("00".repeat(31) + "02");
@@ -556,6 +862,20 @@ function channelRequest(
   });
   if (request.version !== "2") throw new Error("expected channel request");
   return request;
+}
+
+function recoveryChannelRequest(
+  agent: ReturnType<typeof createSoftwareAgentIdentity>,
+  channel: { environment: "staging" | "production"; hostPublicKey: string },
+) {
+  return createAgentRecoveryRequest(agent, {
+    name: "Portfolio Bot",
+    description: "Proposes portfolio operations.",
+    source: "hermes",
+    previousTrustchainId: "app-18-root",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    channel,
+  });
 }
 
 function completionFor(agentPubkey: string, trustchainId: string): string {
