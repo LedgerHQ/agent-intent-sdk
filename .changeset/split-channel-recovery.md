@@ -11,7 +11,8 @@ candidate replace one that has not delivered yet.
 Move the agent recovery request and version-3 recovery completion format into
 the SDK (`createAgentRecoveryRequest`, `validateAgentRecovery`,
 `serializeAgentRecoveryCompletion`, `parseAgentRecoveryCompletion`, and
-related helpers). Recovery requests can carry a signed channel binding
+related helpers). Recovery request `source` is typed as `AgentRecoverySource`
+(`openclaw` or `hermes`), with an `isAgentRecoverySource` guard. Recovery requests can carry a signed channel binding
 (`createAgentRecoveryRequest` returns an `AgentRecoveryChannelRequest` when given
 a channel), and the channel host accepts a recovery completion for a recovery
 request.

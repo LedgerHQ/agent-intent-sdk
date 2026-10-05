@@ -4,7 +4,6 @@ import type {
   AgentEnrollmentChannelBinding,
   AgentEnrollmentRequest,
   AgentEnrollmentValidation,
-  AgentSource,
 } from "./enrollment.ts";
 import { SIGNATURE_COMPACT, sha256Digest, type AgentIdentity } from "./identity.ts";
 import {
@@ -20,6 +19,9 @@ export const AGENT_RECOVERY_COMPLETION_VERSION = 3;
 /** Agent sources that may re-enroll an existing identity into its previous App-18 Trustchain. */
 export const SUPPORTED_AGENT_RECOVERY_SOURCES = ["openclaw", "hermes"] as const;
 
+/** Agent source that may sign a recovery request. */
+export type AgentRecoverySource = (typeof SUPPORTED_AGENT_RECOVERY_SOURCES)[number];
+
 /**
  * Signed request to re-enroll an existing agent key into its previous App-18
  * Trustchain. When `channel` is present it is covered by the signature and the
@@ -31,7 +33,7 @@ export type AgentRecoveryRequest = {
   publicKey: string;
   name: string;
   description: string;
-  source: AgentSource;
+  source: AgentRecoverySource;
   previousTrustchainId: string;
   expiresAt: string;
   channel?: AgentEnrollmentChannelBinding;
@@ -46,7 +48,7 @@ export type AgentRecoveryChannelRequest = AgentRecoveryRequest & {
 export type AgentRecoveryRequestInput = {
   name: string;
   description: string;
-  source: AgentSource;
+  source: AgentRecoverySource;
   previousTrustchainId: string;
   expiresAt: string;
   channel?: AgentEnrollmentChannelBinding;
@@ -65,6 +67,9 @@ export type AgentRecoveryValidation =
   | { status: "valid"; request: AgentRecoveryRequest }
   | Extract<AgentEnrollmentValidation, { status: "invalid" }>;
 
+/** Recovery request parsed from a URL whose `source` has not been narrowed yet. */
+type UncheckedAgentRecoveryRequest = Omit<AgentRecoveryRequest, "source"> & { source: string };
+
 const encoder = new TextEncoder();
 const SEARCH_FIELDS = [
   "channelEnvironment",
@@ -79,6 +84,10 @@ const SEARCH_FIELDS = [
   "source",
   "v",
 ];
+
+export function isAgentRecoverySource(value: unknown): value is AgentRecoverySource {
+  return (SUPPORTED_AGENT_RECOVERY_SOURCES as readonly unknown[]).includes(value);
+}
 
 export function isAgentRecoveryRequest(
   request: AgentEnrollmentRequest | AgentRecoveryRequest,
@@ -175,13 +184,15 @@ export function validateAgentRecovery(
   search: Record<string, unknown>,
   now = new Date(),
 ): AgentRecoveryValidation {
-  const request = recoveryRequestFromSearch(search);
-  if (!request) {
+  const unchecked = recoveryRequestFromSearch(search);
+  if (!unchecked) {
     return invalid("malformed", "This agent recovery link is malformed or incomplete.");
   }
-  if (!(SUPPORTED_AGENT_RECOVERY_SOURCES as readonly string[]).includes(request.source)) {
+  const { source } = unchecked;
+  if (!isAgentRecoverySource(source)) {
     return invalid("unsupported-source", "This agent source is not supported.");
   }
+  const request: AgentRecoveryRequest = { ...unchecked, source };
   const expiration = Date.parse(request.expiresAt);
   if (!Number.isFinite(expiration)) {
     return invalid("malformed", "The agent recovery expiry is invalid.");
@@ -284,7 +295,7 @@ export function parseAgentRecoveryCompletion(
 
 function recoveryRequestFromSearch(
   search: Record<string, unknown>,
-): AgentRecoveryRequest | undefined {
+): UncheckedAgentRecoveryRequest | undefined {
   if (Object.keys(search).some((key) => !SEARCH_FIELDS.includes(key))) return undefined;
   const v = singleString(search.v);
   const recovery = singleString(search.recovery);
@@ -325,7 +336,7 @@ function recoveryRequestFromSearch(
     publicKey: publicKey.toLowerCase(),
     name,
     description,
-    source: source as AgentSource,
+    source,
     previousTrustchainId,
     expiresAt,
     ...(hasChannel
@@ -341,6 +352,7 @@ function recoveryRequestFromSearch(
 }
 
 function assertRecoveryFields(request: Omit<AgentRecoveryRequest, "signature">): void {
+  // Also rejects unsupported sources passed by untyped JavaScript callers.
   const validation = validateAgentRecovery(
     agentRecoverySearch({ ...request, signature: "00".repeat(64) }),
   );

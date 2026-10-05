@@ -1,13 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import { createSoftwareAgentIdentity } from "./identity.ts";
 import {
   agentRecoverySearch,
   canonicalAgentRecoveryPayload,
   createAgentRecoveryRequest,
   createAgentRecoveryUrl,
+  isAgentRecoverySource,
   parseAgentRecoveryCompletion,
   serializeAgentRecoveryCompletion,
   validateAgentRecovery,
+  type AgentRecoveryRequest,
+  type AgentRecoveryRequestInput,
+  type AgentRecoverySource,
 } from "./recovery.ts";
 
 const identity = createSoftwareAgentIdentity("00".repeat(31) + "03");
@@ -41,9 +45,23 @@ describe("agent recovery protocol", () => {
     expect(
       validateAgentRecovery({ ...agentRecoverySearch(request), extra: "1" }, NOW),
     ).toMatchObject({ status: "invalid", reason: "malformed" });
-    expect(() => createAgentRecoveryRequest(identity, { ...input, source: "codex" })).toThrow(
-      /not supported/,
-    );
+    expect(
+      validateAgentRecovery({ ...agentRecoverySearch(request), source: "codex" }, NOW),
+    ).toMatchObject({ status: "invalid", reason: "unsupported-source" });
+    expect(() =>
+      // @ts-expect-error codex is not an AgentRecoverySource; JS callers are still rejected.
+      createAgentRecoveryRequest(identity, { ...input, source: "codex" }),
+    ).toThrow(/not supported/);
+  });
+
+  it("types recovery sources as AgentRecoverySource", () => {
+    expectTypeOf<AgentRecoverySource>().toEqualTypeOf<"openclaw" | "hermes">();
+    expectTypeOf<AgentRecoveryRequest["source"]>().toEqualTypeOf<AgentRecoverySource>();
+    expectTypeOf<AgentRecoveryRequestInput["source"]>().toEqualTypeOf<AgentRecoverySource>();
+    expect(isAgentRecoverySource("hermes")).toBe(true);
+    expect(isAgentRecoverySource("openclaw")).toBe(true);
+    expect(isAgentRecoverySource("codex")).toBe(false);
+    expect(isAgentRecoverySource(undefined)).toBe(false);
   });
 
   it("matches the fixed unbound recovery vector", () => {
