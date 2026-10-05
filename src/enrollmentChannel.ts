@@ -17,6 +17,7 @@ import {
   isAgentRecoveryRequest,
   parseAgentRecoveryCompletion,
   validateAgentRecovery,
+  type AgentRecoveryChannelRequest,
   type AgentRecoveryCompletion,
   type AgentRecoveryRequest,
 } from "./recovery.ts";
@@ -66,11 +67,6 @@ export const AGENT_ENROLLMENT_CHANNEL_DEFAULT_TIMEOUTS = {
   acknowledgementTimeoutMs: 30_000,
   persistTimeoutMs: 30_000,
 } as const satisfies Required<AgentEnrollmentChannelTimeouts>;
-
-/** A recovery request whose signature binds an enrollment channel host. */
-export type AgentRecoveryChannelRequest = AgentRecoveryRequest & {
-  channel: AgentEnrollmentChannelBinding;
-};
 
 /** Signed requests whose completion can be delivered over the enrollment channel. */
 export type AgentEnrollmentChannelRequest = AgentEnrollmentRequestV2 | AgentRecoveryChannelRequest;

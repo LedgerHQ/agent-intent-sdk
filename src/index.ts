@@ -12,7 +12,6 @@ export {
   type AgentEnrollmentChannelHost,
   type AgentEnrollmentChannelRequest,
   type AgentEnrollmentChannelTimeouts,
-  type AgentRecoveryChannelRequest,
   type EnrollmentChannelWebSocket,
   type EnrollmentChannelWebSocketFactory,
 } from "./enrollmentChannel.ts";

@@ -2,6 +2,7 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { AgentIntentSdkError, bytesToHex, hexToBytes } from "./bytes.ts";
 import type {
   AgentEnrollmentChannelBinding,
+  AgentEnrollmentRequest,
   AgentEnrollmentValidation,
   AgentSource,
 } from "./enrollment.ts";
@@ -37,6 +38,20 @@ export type AgentRecoveryRequest = {
   signature: string;
 };
 
+/** A recovery request whose signature binds an enrollment channel host. */
+export type AgentRecoveryChannelRequest = AgentRecoveryRequest & {
+  channel: AgentEnrollmentChannelBinding;
+};
+
+type AgentRecoveryRequestInput = {
+  name: string;
+  description: string;
+  source: AgentSource;
+  previousTrustchainId: string;
+  expiresAt: string;
+  channel?: AgentEnrollmentChannelBinding;
+};
+
 export type AgentRecoveryCompletion = {
   version: typeof AGENT_RECOVERY_COMPLETION_VERSION;
   recovery: true;
@@ -65,9 +80,9 @@ const SEARCH_FIELDS = [
   "v",
 ];
 
-export function isAgentRecoveryRequest(request: {
-  version: string;
-}): request is AgentRecoveryRequest {
+export function isAgentRecoveryRequest(
+  request: AgentEnrollmentRequest | AgentRecoveryRequest,
+): request is AgentRecoveryRequest {
   return request.version === AGENT_RECOVERY_VERSION;
 }
 
@@ -93,14 +108,15 @@ export function canonicalAgentRecoveryPayload(
 
 export function createAgentRecoveryRequest(
   identity: AgentIdentity,
-  input: {
-    name: string;
-    description: string;
-    source: AgentSource;
-    previousTrustchainId: string;
-    expiresAt: string;
-    channel?: AgentEnrollmentChannelBinding;
-  },
+  input: AgentRecoveryRequestInput & { channel: AgentEnrollmentChannelBinding },
+): AgentRecoveryChannelRequest;
+export function createAgentRecoveryRequest(
+  identity: AgentIdentity,
+  input: AgentRecoveryRequestInput,
+): AgentRecoveryRequest;
+export function createAgentRecoveryRequest(
+  identity: AgentIdentity,
+  input: AgentRecoveryRequestInput,
 ): AgentRecoveryRequest {
   const unsigned: Omit<AgentRecoveryRequest, "signature"> = {
     version: AGENT_RECOVERY_VERSION,

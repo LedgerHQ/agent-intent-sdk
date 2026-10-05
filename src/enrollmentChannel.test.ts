@@ -868,7 +868,7 @@ function recoveryChannelRequest(
   agent: ReturnType<typeof createSoftwareAgentIdentity>,
   channel: { environment: "staging" | "production"; hostPublicKey: string },
 ) {
-  const request = createAgentRecoveryRequest(agent, {
+  return createAgentRecoveryRequest(agent, {
     name: "Portfolio Bot",
     description: "Proposes portfolio operations.",
     source: "hermes",
@@ -876,9 +876,6 @@ function recoveryChannelRequest(
     expiresAt: "2099-01-01T00:00:00.000Z",
     channel,
   });
-  const { channel: binding } = request;
-  if (binding === undefined) throw new Error("expected channel-bound recovery request");
-  return { ...request, channel: binding };
 }
 
 function completionFor(agentPubkey: string, trustchainId: string): string {
