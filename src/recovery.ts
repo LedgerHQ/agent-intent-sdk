@@ -43,7 +43,7 @@ export type AgentRecoveryChannelRequest = AgentRecoveryRequest & {
   channel: AgentEnrollmentChannelBinding;
 };
 
-type AgentRecoveryRequestInput = {
+export type AgentRecoveryRequestInput = {
   name: string;
   description: string;
   source: AgentSource;
