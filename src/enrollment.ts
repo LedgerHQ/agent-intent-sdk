@@ -1,6 +1,13 @@
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { AgentIntentSdkError, bytesToHex, hexToBytes } from "./bytes.ts";
 import { SIGNATURE_COMPACT, sha256Digest, type AgentIdentity } from "./identity.ts";
+import {
+  isCompactSignature,
+  isCompressedPublicKey,
+  isEnrollmentEnvironment,
+  isPublicKey,
+  singleString,
+} from "./requestFields.ts";
 
 export const AGENT_ENROLLMENT_VERSION = "1";
 export const AGENT_ENROLLMENT_CHANNEL_VERSION = "2";
@@ -59,7 +66,6 @@ export type AgentEnrollmentValidation =
     };
 
 const encoder = new TextEncoder();
-const HEX = /^[0-9a-f]+$/i;
 
 export function isAgentSource(value: unknown): value is AgentSource {
   return (SUPPORTED_AGENT_SOURCES as readonly unknown[]).includes(value);
@@ -252,36 +258,6 @@ function assertEnrollmentFields(request: UnsignedAgentEnrollmentRequest): void {
   if (validation.status === "invalid" && validation.reason !== "invalid-signature") {
     throw new AgentIntentSdkError(validation.message);
   }
-}
-
-function singleString(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
-}
-
-function isPublicKey(value: string): boolean {
-  return (value.length === 66 || value.length === 130) && HEX.test(value);
-}
-
-function isCompressedPublicKey(value: string | undefined): value is string {
-  if (value === undefined || value.length !== 66 || !HEX.test(value)) {
-    return false;
-  }
-  try {
-    secp256k1.Point.fromHex(value);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function isEnrollmentEnvironment(
-  value: string | undefined,
-): value is AgentEnrollmentChannelBinding["environment"] {
-  return value === "staging" || value === "production";
-}
-
-function isCompactSignature(value: string): boolean {
-  return value.length === 128 && HEX.test(value);
 }
 
 function invalid(
