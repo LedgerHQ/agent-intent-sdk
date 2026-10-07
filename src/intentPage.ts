@@ -74,18 +74,28 @@ const OPTIONAL_STRING_FIELDS = [
 ] as const;
 
 export function parseAgentIntentPage(body: string, nextCursor: string | null): AgentIntentPage {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body);
-  } catch (cause) {
-    throw new AgentIntentSdkError("BFF returned an intent listing that is not valid JSON.", {
-      cause,
-    });
-  }
+  const parsed = parseJson(body, "an intent listing");
   if (!Array.isArray(parsed) || !parsed.every(isAgentIntentRecord)) {
     throw new AgentIntentSdkError("BFF returned an intent listing with an unexpected shape.");
   }
   return nextCursor ? { intents: parsed, nextCursor } : { intents: parsed };
+}
+
+/** Parses one intent, as `GET /v1/intents/{intentId}` returns it. */
+export function parseAgentIntentRecord(body: string): AgentIntentRecord {
+  const parsed = parseJson(body, "an intent");
+  if (!isAgentIntentRecord(parsed)) {
+    throw new AgentIntentSdkError("BFF returned an intent with an unexpected shape.");
+  }
+  return parsed;
+}
+
+function parseJson(body: string, subject: string): unknown {
+  try {
+    return JSON.parse(body);
+  } catch (cause) {
+    throw new AgentIntentSdkError(`BFF returned ${subject} that is not valid JSON.`, { cause });
+  }
 }
 
 function isAgentIntentRecord(value: unknown): value is AgentIntentRecord {

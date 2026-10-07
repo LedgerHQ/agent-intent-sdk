@@ -662,3 +662,95 @@ describe("agent intent listing", () => {
     expect(error).toMatchObject({ status: 400, type: "invalid_cursor", message: "Invalid cursor" });
   });
 });
+
+describe("agent intent lookup", () => {
+  const RECORD = {
+    id: "0192f7a4-0000-7000-8000-000000000001",
+    agentPubkey: "02agent",
+    status: "broadcast",
+    intent: {
+      type: "send",
+      network: "ethereum",
+      amount: "1000000000000000",
+      asset: { type: "native" },
+    },
+    createdAt: "2026-10-07T10:00:00Z",
+    updatedAt: "2026-10-07T10:05:00Z",
+  };
+
+  function lookupClient(response: Response) {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(response);
+    const client = createAgentIntentClient({
+      bffBaseUrl: "https://bff.example/agent-intent",
+      identity: createSoftwareAgentIdentity(SECRET_KEY),
+      trustchainId: "trustchain-id",
+      environment: "staging",
+      tokenProvider: staticAccessTokenProvider("agent-token"),
+      fetch: fetcher,
+    });
+    return { client, fetcher };
+  }
+
+  it("reads one intent by id with the agent's token", async () => {
+    const { client, fetcher } = lookupClient(new Response(JSON.stringify(RECORD), { status: 200 }));
+
+    await expect(client.getIntent(RECORD.id)).resolves.toEqual(RECORD);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledWith(
+      new URL(`https://bff.example/agent-intent/v1/intents/${RECORD.id}`),
+      expect.objectContaining({
+        method: "GET",
+        headers: expect.objectContaining({ Authorization: "Bearer agent-token" }),
+      }),
+    );
+  });
+
+  it("encodes the id so it can't escape the intents path", async () => {
+    const { client, fetcher } = lookupClient(new Response(JSON.stringify(RECORD), { status: 200 }));
+
+    await client.getIntent("../stats?x=1");
+
+    expect(fetcher).toHaveBeenCalledWith(
+      new URL("https://bff.example/agent-intent/v1/intents/..%2Fstats%3Fx%3D1"),
+      expect.anything(),
+    );
+  });
+
+  it("keeps every digit of an amount sent as a JSON number", async () => {
+    const body = JSON.stringify(RECORD).replace(
+      '"amount":"1000000000000000"',
+      '"amount":9007199254740993',
+    );
+    const { client } = lookupClient(new Response(body, { status: 200 }));
+
+    await expect(client.getIntent(RECORD.id)).resolves.toMatchObject({
+      intent: { amount: "9007199254740993" },
+    });
+  });
+
+  it("reports an unknown or foreign intent as a 404 HTTP error", async () => {
+    const { client } = lookupClient(
+      new Response(JSON.stringify({ message: "Intent not found" }), { status: 404 }),
+    );
+
+    const error = await client.getIntent(RECORD.id).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(AgentIntentHttpError);
+    expect(error).toMatchObject({ status: 404, message: "Intent not found" });
+  });
+
+  it("rejects an intent with the wrong shape", async () => {
+    const { client } = lookupClient(new Response("[]", { status: 200 }));
+
+    await expect(client.getIntent(RECORD.id)).rejects.toThrow(
+      "BFF returned an intent with an unexpected shape.",
+    );
+  });
+
+  it("rejects an intent that is not valid JSON", async () => {
+    const { client } = lookupClient(new Response("{", { status: 200 }));
+
+    await expect(client.getIntent(RECORD.id)).rejects.toThrow(
+      "BFF returned an intent that is not valid JSON.",
+    );
+  });
+});

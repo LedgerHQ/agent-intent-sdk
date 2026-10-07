@@ -11,7 +11,9 @@ import {
   isAgentIntentPageSize,
   isAgentIntentStatus,
   parseAgentIntentPage,
+  parseAgentIntentRecord,
   type AgentIntentPage,
+  type AgentIntentRecord,
   type ListAgentIntentsQuery,
 } from "./intentPage.ts";
 import {
@@ -43,6 +45,11 @@ export type AgentIntentClient = {
   createSendIntent(intent: SendIntent): Promise<string>;
   createSignedIntent(intent: SendIntent, nonce?: string): SignedCreateIntent;
   listIntents(query?: ListAgentIntentsQuery): Promise<AgentIntentPage>;
+  /**
+   * Reads one intent this agent issued. The BFF answers 404, as `AgentIntentHttpError`, both for an
+   * unknown id and for another agent's intent, so the two can't be told apart.
+   */
+  getIntent(intentId: string): Promise<AgentIntentRecord>;
 };
 
 export function createAgentIntentClient(input: {
@@ -124,6 +131,20 @@ export function createAgentIntentClient(input: {
       const body = await response.text();
       if (!response.ok) throw httpError(response, body);
       return parseAgentIntentPage(body, response.headers.get("X-Ledger-Next"));
+    },
+    getIntent: async (intentId) => {
+      const url = new URL(encodeURIComponent(intentId), withTrailingSlash(endpoint.href));
+      const response = await tokenProvider.withAccessToken(
+        (accessToken) =>
+          fetcher(url, {
+            method: "GET",
+            headers: { Accept: "application/json", Authorization: `Bearer ${accessToken}` },
+          }),
+        (candidate) => candidate.status === 401,
+      );
+      const body = await response.text();
+      if (!response.ok) throw httpError(response, body);
+      return parseAgentIntentRecord(body);
     },
   };
 }
