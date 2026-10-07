@@ -723,9 +723,7 @@ describe("agent intent lookup", () => {
         new Response(JSON.stringify(RECORD), { status: 200 }),
       );
 
-      await expect(client.getIntent(intentId)).rejects.toThrow(
-        `Invalid intent id: "${intentId}".`,
-      );
+      await expect(client.getIntent(intentId)).rejects.toThrow(`Invalid intent id: "${intentId}".`);
       expect(fetcher).not.toHaveBeenCalled();
     },
   );
