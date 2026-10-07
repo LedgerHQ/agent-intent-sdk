@@ -716,6 +716,20 @@ describe("agent intent lookup", () => {
     );
   });
 
+  it.each(["", ".", ".."])(
+    "rejects the id %j before calling the BFF, as it would resolve to another endpoint",
+    async (intentId) => {
+      const { client, fetcher } = lookupClient(
+        new Response(JSON.stringify(RECORD), { status: 200 }),
+      );
+
+      await expect(client.getIntent(intentId)).rejects.toThrow(
+        `Invalid intent id: "${intentId}".`,
+      );
+      expect(fetcher).not.toHaveBeenCalled();
+    },
+  );
+
   it("keeps every digit of an amount sent as a JSON number", async () => {
     const body = JSON.stringify(RECORD).replace(
       '"amount":"1000000000000000"',

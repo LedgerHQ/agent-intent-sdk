@@ -133,6 +133,11 @@ export function createAgentIntentClient(input: {
       return parseAgentIntentPage(body, response.headers.get("X-Ledger-Next"));
     },
     getIntent: async (intentId) => {
+      // `encodeURIComponent` keeps "." and "..", which URL resolution would turn into the
+      // collection or a parent path, and "" would read the listing.
+      if (intentId === "" || intentId === "." || intentId === "..") {
+        throw new AgentIntentSdkError(`Invalid intent id: "${intentId}".`);
+      }
       const url = new URL(encodeURIComponent(intentId), withTrailingSlash(endpoint.href));
       const response = await tokenProvider.withAccessToken(
         (accessToken) =>
