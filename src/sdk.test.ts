@@ -1,7 +1,7 @@
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { describe, expect, it, vi } from "vitest";
 import { buildAttestation, buildUnsignedChallengeTlv, createAgentTokenProvider } from "./auth.ts";
-import { bytesToHex, hexToBytes } from "./bytes.ts";
+import { AgentIntentSdkError, bytesToHex, hexToBytes } from "./bytes.ts";
 import {
   AgentIntentHttpError,
   createAgentIntentClient,
@@ -20,6 +20,7 @@ import {
   validateAgentEnrollment,
 } from "./enrollment.ts";
 import { createSoftwareAgentIdentity, sha256Digest } from "./identity.ts";
+import type { ListAgentIntentsQuery } from "./intentPage.ts";
 import {
   encodeSendIntentTlv,
   serializeCreateIntent,
@@ -543,10 +544,103 @@ describe("agent intent listing", () => {
     ]);
   });
 
-  it("rejects a malformed listing", async () => {
+  it("rejects a listing with the wrong shape", async () => {
     const { client } = listingClient(new Response('[{"id":1}]', { status: 200 }));
 
-    await expect(client.listIntents()).rejects.toThrow("BFF returned an invalid intent listing.");
+    await expect(client.listIntents()).rejects.toThrow(
+      "BFF returned an intent listing with an unexpected shape.",
+    );
+  });
+
+  it("rejects a listing that is not valid JSON, keeping the parse error as the cause", async () => {
+    const body =
+      '[{"id":"i1","agentPubkey":"02agent","status":"created","createdAt":"t","updatedAt":"t",' +
+      '"intent":{"type":"send","amount":01}}]';
+    const { client } = listingClient(new Response(body, { status: 200 }));
+
+    const error = await client.listIntents().catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(AgentIntentSdkError);
+    expect(error).toMatchObject({
+      message: "BFF returned an intent listing that is not valid JSON.",
+      cause: expect.any(SyntaxError),
+    });
+  });
+
+  it.each([
+    ["network", { network: 7 }],
+    ["sender", { sender: false }],
+    ["recipient", { recipient: {} }],
+    ["feeStrategy", { feeStrategy: 1 }],
+    ["description", { description: 123 }],
+    ["asset", { asset: "native" }],
+    ["asset type", { asset: { type: 3 } }],
+    ["asset reference", { asset: { type: "erc20", assetReference: 1 } }],
+    ["asset owner", { asset: { type: "erc20", assetOwner: [] } }],
+  ])("rejects an intent whose %s has the wrong type", async (_field, override) => {
+    const record = { ...RECORD, intent: { ...RECORD.intent, ...override } };
+    const { client } = listingClient(new Response(JSON.stringify([record]), { status: 200 }));
+
+    await expect(client.listIntents()).rejects.toThrow(
+      "BFF returned an intent listing with an unexpected shape.",
+    );
+  });
+
+  it("keeps fields a newer BFF adds to an intent", async () => {
+    const record = { ...RECORD, intent: { ...RECORD.intent, provider: "lifi", hops: 2 } };
+    const { client } = listingClient(new Response(JSON.stringify([record]), { status: 200 }));
+
+    await expect(client.listIntents()).resolves.toEqual({ intents: [record] });
+  });
+
+  it("treats an empty cursor as a first page and sends the filters", async () => {
+    const { client, fetcher } = listingClient(new Response("[]", { status: 200 }));
+
+    await client.listIntents({ cursor: "", status: ["failed"], pageSize: 10 });
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledWith(
+      new URL("https://bff.example/agent-intent/v1/intents?status=failed&pageSize=10"),
+      expect.anything(),
+    );
+  });
+
+  it.each([
+    [{ pageSize: 7 }, "Unsupported pageSize: 7."],
+    [{ status: ["signed", "pending"] }, "Unsupported intent status: pending."],
+  ])("rejects an unsupported query before calling the BFF", async (query, message) => {
+    const { client, fetcher } = listingClient(new Response("[]", { status: 200 }));
+
+    await expect(client.listIntents(query as ListAgentIntentsQuery)).rejects.toThrow(message);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("retries once with a fresh token after a 401", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([RECORD]), { status: 200 }));
+    const client = createAgentIntentClient({
+      bffBaseUrl: "https://bff.example/agent-intent",
+      identity: createSoftwareAgentIdentity(SECRET_KEY),
+      trustchainId: "trustchain-id",
+      environment: "staging",
+      tokenProvider: {
+        withAccessToken: async (query, retryWhen) => {
+          const result = await query("stale-token");
+          return retryWhen?.(result) ? query("fresh-token") : result;
+        },
+      },
+      fetch: fetcher,
+    });
+
+    await expect(client.listIntents()).resolves.toEqual({ intents: [RECORD] });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher).toHaveBeenLastCalledWith(
+      expect.any(URL),
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer fresh-token" }),
+      }),
+    );
   });
 
   it("surfaces BFF errors with their status and type", async () => {

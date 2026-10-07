@@ -8,6 +8,8 @@ import {
 import { AgentIntentSdkError } from "./bytes.ts";
 import type { AgentIdentity } from "./identity.ts";
 import {
+  isAgentIntentPageSize,
+  isAgentIntentStatus,
   parseAgentIntentPage,
   type AgentIntentPage,
   type ListAgentIntentsQuery,
@@ -97,9 +99,18 @@ export function createAgentIntentClient(input: {
     },
     listIntents: async (query = {}) => {
       const url = new URL(endpoint);
-      if (query.cursor !== undefined) {
+      // An empty cursor means "no next page", like an empty `X-Ledger-Next`.
+      if (query.cursor) {
         url.searchParams.set("cursor", query.cursor);
       } else {
+        // The types already restrict these; JavaScript callers get a clear error instead of a 400.
+        const unknownStatus = query.status?.find((status) => !isAgentIntentStatus(status));
+        if (unknownStatus !== undefined) {
+          throw new AgentIntentSdkError(`Unsupported intent status: ${String(unknownStatus)}.`);
+        }
+        if (query.pageSize !== undefined && !isAgentIntentPageSize(query.pageSize)) {
+          throw new AgentIntentSdkError(`Unsupported pageSize: ${String(query.pageSize)}.`);
+        }
         if (query.status?.length) url.searchParams.set("status", query.status.join(","));
         if (query.pageSize !== undefined) url.searchParams.set("pageSize", String(query.pageSize));
       }

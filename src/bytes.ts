@@ -23,8 +23,8 @@ export function concatBytes(...parts: readonly Uint8Array[]): Uint8Array {
 }
 
 export class AgentIntentSdkError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "AgentIntentSdkError";
   }
 }

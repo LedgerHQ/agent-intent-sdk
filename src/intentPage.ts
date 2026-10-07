@@ -71,7 +71,19 @@ export type AgentIntentPage = {
   nextCursor?: string;
 };
 
-const AMOUNT_NUMBER = /("(?:amount|fromAmount|toAmount)"\s*:\s*)(\d+)(?=\s*[,}])/g;
+// Only valid JSON integers: a malformed number such as `01` is left for `JSON.parse` to reject.
+const AMOUNT_NUMBER = /("(?:amount|fromAmount|toAmount)"\s*:\s*)(0|[1-9]\d*)(?=\s*[,}])/g;
+
+const OPTIONAL_STRING_FIELDS = [
+  "network",
+  "sender",
+  "recipient",
+  "amount",
+  "fromAmount",
+  "toAmount",
+  "feeStrategy",
+  "description",
+] as const;
 
 /**
  * Parses an intent listing body. An older BFF encodes amounts as JSON numbers; they are turned into
@@ -81,11 +93,13 @@ export function parseAgentIntentPage(body: string, nextCursor: string | null): A
   let parsed: unknown;
   try {
     parsed = JSON.parse(body.replace(AMOUNT_NUMBER, '$1"$2"'));
-  } catch {
-    throw new AgentIntentSdkError("BFF returned an invalid intent listing.");
+  } catch (cause) {
+    throw new AgentIntentSdkError("BFF returned an intent listing that is not valid JSON.", {
+      cause,
+    });
   }
   if (!Array.isArray(parsed) || !parsed.every(isAgentIntentRecord)) {
-    throw new AgentIntentSdkError("BFF returned an invalid intent listing.");
+    throw new AgentIntentSdkError("BFF returned an intent listing with an unexpected shape.");
   }
   return nextCursor ? { intents: parsed, nextCursor } : { intents: parsed };
 }
@@ -104,8 +118,22 @@ function isAgentIntentRecord(value: unknown): value is AgentIntentRecord {
     typeof intent === "object" &&
     intent !== null &&
     typeof intent.type === "string" &&
-    ["amount", "fromAmount", "toAmount"].every(
-      (field) => intent[field] === undefined || typeof intent[field] === "string",
-    )
+    OPTIONAL_STRING_FIELDS.every((field) => isOptionalString(intent[field])) &&
+    isOptionalAsset(intent.asset)
+  );
+}
+
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === "string";
+}
+
+function isOptionalAsset(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== "object" || value === null) return false;
+  const asset = value as Record<string, unknown>;
+  return (
+    typeof asset.type === "string" &&
+    isOptionalString(asset.assetReference) &&
+    isOptionalString(asset.assetOwner)
   );
 }
