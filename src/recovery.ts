@@ -1,9 +1,12 @@
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { AgentIntentSdkError, bytesToHex, hexToBytes } from "./bytes.ts";
-import type {
-  AgentEnrollmentChannelBinding,
-  AgentEnrollmentRequest,
-  AgentEnrollmentValidation,
+import {
+  isAgentSource,
+  SUPPORTED_AGENT_SOURCES,
+  type AgentEnrollmentChannelBinding,
+  type AgentEnrollmentRequest,
+  type AgentEnrollmentValidation,
+  type AgentSource,
 } from "./enrollment.ts";
 import { SIGNATURE_COMPACT, sha256Digest, type AgentIdentity } from "./identity.ts";
 import {
@@ -16,11 +19,14 @@ import {
 
 export const AGENT_RECOVERY_VERSION = "3";
 export const AGENT_RECOVERY_COMPLETION_VERSION = 3;
-/** Agent sources that may re-enroll an existing identity into its previous App-18 Trustchain. */
-export const SUPPORTED_AGENT_RECOVERY_SOURCES = ["openclaw", "hermes"] as const;
+/**
+ * Agent sources that may re-enroll an existing identity into its previous App-18 Trustchain: every
+ * supported agent source. Recovery never depends on the source; it is only a signed field.
+ */
+export const SUPPORTED_AGENT_RECOVERY_SOURCES = SUPPORTED_AGENT_SOURCES;
 
 /** Agent source that may sign a recovery request. */
-export type AgentRecoverySource = (typeof SUPPORTED_AGENT_RECOVERY_SOURCES)[number];
+export type AgentRecoverySource = AgentSource;
 
 /**
  * Signed request to re-enroll an existing agent key into its previous App-18
@@ -86,7 +92,7 @@ const SEARCH_FIELDS = [
 ];
 
 export function isAgentRecoverySource(value: unknown): value is AgentRecoverySource {
-  return (SUPPORTED_AGENT_RECOVERY_SOURCES as readonly unknown[]).includes(value);
+  return isAgentSource(value);
 }
 
 export function isAgentRecoveryRequest(

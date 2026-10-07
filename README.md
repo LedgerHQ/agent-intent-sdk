@@ -127,8 +127,9 @@ finished, closed, or timed out.
 ### Recovery
 
 A recovery request re-enrolls an existing agent key into its previous App-18
-Trustchain. Its `source` is an `AgentRecoverySource` (`openclaw` or `hermes`;
-see `isAgentRecoverySource`). Bind it to a channel host the same way:
+Trustchain. Its `source` is an `AgentRecoverySource`, which is any supported
+`AgentSource` (see `isAgentRecoverySource`): recovery never depends on the
+source. Bind it to a channel host the same way:
 
 ```ts
 const request = createAgentRecoveryRequest(identity, {
