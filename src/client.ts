@@ -19,8 +19,10 @@ import {
 import {
   serializeCreateIntent,
   signCreateIntent,
+  signSwapIntent,
   type SendIntent,
   type SignedCreateIntent,
+  type SwapIntent,
 } from "./intents.ts";
 
 export const AGENT_INTENT_FRONTEND_URLS: Record<AgentIntentEnvironment, string> = {
@@ -46,6 +48,8 @@ export type AgentIntentClient = {
   createSignedIntent(intent: SendIntent, nonce?: string): SignedCreateIntent;
   listIntents(query?: ListAgentIntentsQuery): Promise<AgentIntentPage>;
   getIntent(intentId: string): Promise<AgentIntentRecord>;
+  /** Signs and submits a Swap, then returns the frontend deeplink the user reviews it at. */
+  createSwapIntent(intent: SwapIntent): Promise<string>;
 };
 
 export function createAgentIntentClient(input: {
@@ -69,36 +73,42 @@ export function createAgentIntentClient(input: {
     });
   const endpoint = new URL("v1/intents", withTrailingSlash(input.bffBaseUrl));
 
+  const submitIntent = async (requestBody: string): Promise<string> => {
+    const response = await tokenProvider.withAccessToken(
+      (accessToken) =>
+        fetcher(endpoint, {
+          method: "POST",
+          headers: {
+            Accept: "text/plain",
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: requestBody,
+        }),
+      (candidate) => candidate.status === 401,
+    );
+    const body = await response.text();
+    if (!response.ok) throw httpError(response, body);
+    try {
+      const deeplink = new URL(body);
+      return new URL(
+        `${deeplink.pathname}${deeplink.search}${deeplink.hash}`,
+        AGENT_INTENT_FRONTEND_URLS[input.environment],
+      ).toString();
+    } catch {
+      throw new AgentIntentSdkError("BFF returned an invalid intent deeplink.");
+    }
+  };
+
   return {
     publicKey: input.identity.publicKey,
     createSignedIntent: (intent, nonce) => signCreateIntent(input.identity, intent, nonce),
-    createSendIntent: async (intent) => {
-      const request = signCreateIntent(input.identity, intent);
-      const response = await tokenProvider.withAccessToken(
-        (accessToken) =>
-          fetcher(endpoint, {
-            method: "POST",
-            headers: {
-              Accept: "text/plain",
-              Authorization: `Bearer ${accessToken}`,
-              "Content-Type": "application/json",
-            },
-            body: serializeCreateIntent(request),
-          }),
-        (candidate) => candidate.status === 401,
-      );
-      const body = await response.text();
-      if (!response.ok) throw httpError(response, body);
-      try {
-        const deeplink = new URL(body);
-        return new URL(
-          `${deeplink.pathname}${deeplink.search}${deeplink.hash}`,
-          AGENT_INTENT_FRONTEND_URLS[input.environment],
-        ).toString();
-      } catch {
-        throw new AgentIntentSdkError("BFF returned an invalid intent deeplink.");
-      }
-    },
+    // async so a validation error rejects the promise instead of throwing synchronously.
+    createSendIntent: async (intent) =>
+      submitIntent(serializeCreateIntent(signCreateIntent(input.identity, intent))),
+    // Swap amounts are decimal strings on the wire, so plain JSON keeps them exact.
+    createSwapIntent: async (intent) =>
+      submitIntent(JSON.stringify(signSwapIntent(input.identity, intent))),
     listIntents: async (query = {}) => {
       const url = new URL(endpoint);
       // An empty cursor means "no next page", like an empty `X-Ledger-Next`.

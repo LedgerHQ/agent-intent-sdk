@@ -445,6 +445,23 @@ describe("agent client", () => {
     );
   });
 
+  it("rejects an invalid send without calling the service", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    const client = createAgentIntentClient({
+      bffBaseUrl: "https://bff.example/agent-intent",
+      identity: createSoftwareAgentIdentity(SECRET_KEY),
+      trustchainId: "trustchain-id",
+      environment: "staging",
+      tokenProvider: staticAccessTokenProvider("agent-token"),
+      fetch: fetcher,
+    });
+
+    await expect(client.createSendIntent({ ...SEND, amount: "-1" })).rejects.toThrow(
+      "amount must be a non-negative decimal integer.",
+    );
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("uses the production frontend origin for production intents", async () => {
     const client = createAgentIntentClient({
       bffBaseUrl: "https://bff.example/agent-intent",
