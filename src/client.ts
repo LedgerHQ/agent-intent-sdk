@@ -8,6 +8,11 @@ import {
 import { AgentIntentSdkError } from "./bytes.ts";
 import type { AgentIdentity } from "./identity.ts";
 import {
+  parseAgentIntentPage,
+  type AgentIntentPage,
+  type ListAgentIntentsQuery,
+} from "./intentPage.ts";
+import {
   serializeCreateIntent,
   signCreateIntent,
   type SendIntent,
@@ -35,6 +40,8 @@ export type AgentIntentClient = {
   readonly publicKey: string;
   createSendIntent(intent: SendIntent): Promise<string>;
   createSignedIntent(intent: SendIntent, nonce?: string): SignedCreateIntent;
+  /** Lists only the intents this agent issued, most recent first. The BFF scopes it to the agent. */
+  listIntents(query?: ListAgentIntentsQuery): Promise<AgentIntentPage>;
 };
 
 export function createAgentIntentClient(input: {
@@ -87,6 +94,26 @@ export function createAgentIntentClient(input: {
       } catch {
         throw new AgentIntentSdkError("BFF returned an invalid intent deeplink.");
       }
+    },
+    listIntents: async (query = {}) => {
+      const url = new URL(endpoint);
+      if (query.cursor !== undefined) {
+        url.searchParams.set("cursor", query.cursor);
+      } else {
+        if (query.status?.length) url.searchParams.set("status", query.status.join(","));
+        if (query.pageSize !== undefined) url.searchParams.set("pageSize", String(query.pageSize));
+      }
+      const response = await tokenProvider.withAccessToken(
+        (accessToken) =>
+          fetcher(url, {
+            method: "GET",
+            headers: { Accept: "application/json", Authorization: `Bearer ${accessToken}` },
+          }),
+        (candidate) => candidate.status === 401,
+      );
+      const body = await response.text();
+      if (!response.ok) throw httpError(response, body);
+      return parseAgentIntentPage(body, response.headers.get("X-Ledger-Next"));
     },
   };
 }

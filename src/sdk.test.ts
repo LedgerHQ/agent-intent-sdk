@@ -2,7 +2,11 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { describe, expect, it, vi } from "vitest";
 import { buildAttestation, buildUnsignedChallengeTlv, createAgentTokenProvider } from "./auth.ts";
 import { bytesToHex, hexToBytes } from "./bytes.ts";
-import { createAgentIntentClient, staticAccessTokenProvider } from "./client.ts";
+import {
+  AgentIntentHttpError,
+  createAgentIntentClient,
+  staticAccessTokenProvider,
+} from "./client.ts";
 import {
   parseAgentEnrollmentCompletion,
   serializeAgentEnrollmentCompletion,
@@ -455,5 +459,105 @@ describe("agent client", () => {
     await expect(client.createSendIntent(SEND)).resolves.toBe(
       "https://agent-intent.ledger.com/intents/123",
     );
+  });
+});
+
+describe("agent intent listing", () => {
+  const RECORD = {
+    id: "0192f7a4-0000-7000-8000-000000000001",
+    agentPubkey: "02agent",
+    status: "signed",
+    intent: {
+      type: "send",
+      network: "ethereum",
+      sender: "0x1111111111111111111111111111111111111111",
+      recipient: "0x2222222222222222222222222222222222222222",
+      amount: "1000000000000000",
+      asset: { type: "native" },
+      feeStrategy: "medium",
+    },
+    createdAt: "2026-10-07T10:00:00Z",
+    updatedAt: "2026-10-07T10:05:00Z",
+  };
+
+  function listingClient(response: Response) {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(response);
+    const client = createAgentIntentClient({
+      bffBaseUrl: "https://bff.example/agent-intent",
+      identity: createSoftwareAgentIdentity(SECRET_KEY),
+      trustchainId: "trustchain-id",
+      environment: "staging",
+      tokenProvider: staticAccessTokenProvider("agent-token"),
+      fetch: fetcher,
+    });
+    return { client, fetcher };
+  }
+
+  it("lists the agent's intents with status filters, page size and the next cursor", async () => {
+    const { client, fetcher } = listingClient(
+      new Response(JSON.stringify([RECORD]), {
+        status: 200,
+        headers: { "X-Ledger-Next": "opaque-token", "X-Ledger-Page-Size": "5" },
+      }),
+    );
+
+    await expect(
+      client.listIntents({ status: ["signed", "broadcast"], pageSize: 5 }),
+    ).resolves.toEqual({ intents: [RECORD], nextCursor: "opaque-token" });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledWith(
+      new URL("https://bff.example/agent-intent/v1/intents?status=signed%2Cbroadcast&pageSize=5"),
+      expect.objectContaining({
+        method: "GET",
+        headers: expect.objectContaining({ Authorization: "Bearer agent-token" }),
+      }),
+    );
+  });
+
+  it("continues with only the cursor and reports the last page without one", async () => {
+    const { client, fetcher } = listingClient(new Response("[]", { status: 200 }));
+
+    await expect(
+      client.listIntents({ cursor: "opaque-token", status: ["signed"], pageSize: 50 }),
+    ).resolves.toEqual({ intents: [] });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledWith(
+      new URL("https://bff.example/agent-intent/v1/intents?cursor=opaque-token"),
+      expect.anything(),
+    );
+  });
+
+  it("keeps every digit of amounts an older BFF encodes as JSON numbers", async () => {
+    const body =
+      '[{"id":"i1","agentPubkey":"02agent","status":"created","createdAt":"t","updatedAt":"t",' +
+      '"intent":{"type":"send","amount":1000000000000000000001,"description":"\\"amount\\":1"}},' +
+      '{"id":"i2","agentPubkey":"02agent","status":"created","createdAt":"t","updatedAt":"t",' +
+      '"intent":{"type":"swap","fromAmount":9007199254740993,"toAmount":"42"}}]';
+    const { client } = listingClient(new Response(body, { status: 200 }));
+
+    const page = await client.listIntents();
+
+    expect(page.intents.map(({ intent }) => intent)).toEqual([
+      { type: "send", amount: "1000000000000000000001", description: '"amount":1' },
+      { type: "swap", fromAmount: "9007199254740993", toAmount: "42" },
+    ]);
+  });
+
+  it("rejects a malformed listing", async () => {
+    const { client } = listingClient(new Response('[{"id":1}]', { status: 200 }));
+
+    await expect(client.listIntents()).rejects.toThrow("BFF returned an invalid intent listing.");
+  });
+
+  it("surfaces BFF errors with their status and type", async () => {
+    const { client } = listingClient(
+      new Response(JSON.stringify({ type: "invalid_cursor", message: "Invalid cursor" }), {
+        status: 400,
+      }),
+    );
+
+    const error = await client.listIntents({ cursor: "bad" }).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(AgentIntentHttpError);
+    expect(error).toMatchObject({ status: 400, type: "invalid_cursor", message: "Invalid cursor" });
   });
 });

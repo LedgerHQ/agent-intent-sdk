@@ -56,6 +56,26 @@ const deeplink = await client.createSendIntent({
 Amounts accept decimal strings or `bigint` and are serialized as exact JSON
 integers to avoid JavaScript precision loss.
 
+## List the agent's intents
+
+```ts
+let page = await client.listIntents({ status: ["signed", "broadcast"], pageSize: 10 });
+while (true) {
+  for (const intent of page.intents) console.log(intent.id, intent.status, intent.intent.amount);
+  if (!page.nextCursor) break;
+  page = await client.listIntents({ cursor: page.nextCursor });
+}
+```
+
+The BFF scopes the listing to the authenticated agent: it only returns intents
+that agent issued, most recent first. `status` takes any of
+`AGENT_INTENT_STATUSES` and `pageSize` one of `AGENT_INTENT_PAGE_SIZES` (1, 5,
+10, 50, 100; the BFF defaults to 10). `nextCursor` is opaque; when you pass it
+back, the first page's filters and page size apply and the other options are
+ignored. Amounts (`amount`, `fromAmount`, `toAmount`) are always exact decimal
+strings, also from an older BFF that sends them as JSON numbers. HTTP failures
+throw `AgentIntentHttpError` with the BFF's `status` and `type`.
+
 ## Enrollment fingerprint
 
 Display the same fingerprint that the Ledger device shows:
