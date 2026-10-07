@@ -1,4 +1,5 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
+import { SUPPORTED_AGENT_SOURCES, type AgentSource } from "./enrollment.ts";
 import { createSoftwareAgentIdentity } from "./identity.ts";
 import {
   agentRecoverySearch,
@@ -7,6 +8,7 @@ import {
   createAgentRecoveryUrl,
   isAgentRecoverySource,
   parseAgentRecoveryCompletion,
+  SUPPORTED_AGENT_RECOVERY_SOURCES,
   serializeAgentRecoveryCompletion,
   validateAgentRecovery,
   type AgentRecoveryRequest,
@@ -46,21 +48,33 @@ describe("agent recovery protocol", () => {
       validateAgentRecovery({ ...agentRecoverySearch(request), extra: "1" }, NOW),
     ).toMatchObject({ status: "invalid", reason: "malformed" });
     expect(
-      validateAgentRecovery({ ...agentRecoverySearch(request), source: "codex" }, NOW),
+      validateAgentRecovery({ ...agentRecoverySearch(request), source: "trading" }, NOW),
     ).toMatchObject({ status: "invalid", reason: "unsupported-source" });
     expect(() =>
-      // @ts-expect-error codex is not an AgentRecoverySource; JS callers are still rejected.
-      createAgentRecoveryRequest(identity, { ...input, source: "codex" }),
+      // @ts-expect-error trading is not an AgentRecoverySource; JS callers are still rejected.
+      createAgentRecoveryRequest(identity, { ...input, source: "trading" }),
     ).toThrow(/not supported/);
   });
 
+  it("accepts every supported agent source for recovery", () => {
+    expect(SUPPORTED_AGENT_RECOVERY_SOURCES).toEqual(SUPPORTED_AGENT_SOURCES);
+    for (const source of SUPPORTED_AGENT_SOURCES) {
+      const recovery = createAgentRecoveryRequest(identity, { ...input, source });
+      expect(validateAgentRecovery(agentRecoverySearch(recovery), NOW)).toMatchObject({
+        status: "valid",
+        request: { source },
+      });
+    }
+  });
+
   it("types recovery sources as AgentRecoverySource", () => {
-    expectTypeOf<AgentRecoverySource>().toEqualTypeOf<"openclaw" | "hermes">();
+    expectTypeOf<AgentRecoverySource>().toEqualTypeOf<AgentSource>();
     expectTypeOf<AgentRecoveryRequest["source"]>().toEqualTypeOf<AgentRecoverySource>();
     expectTypeOf<AgentRecoveryRequestInput["source"]>().toEqualTypeOf<AgentRecoverySource>();
     expect(isAgentRecoverySource("hermes")).toBe(true);
     expect(isAgentRecoverySource("openclaw")).toBe(true);
-    expect(isAgentRecoverySource("codex")).toBe(false);
+    expect(isAgentRecoverySource("codex")).toBe(true);
+    expect(isAgentRecoverySource("trading")).toBe(false);
     expect(isAgentRecoverySource(undefined)).toBe(false);
   });
 
