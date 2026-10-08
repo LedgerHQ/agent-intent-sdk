@@ -1,4 +1,4 @@
-import { base58Decode, base58Encode } from "./base58.ts";
+import { base58Decode } from "./base58.ts";
 import { AgentIntentSdkError, bytesToHex, concatBytes, hexToBytes } from "./bytes.ts";
 import { SIGNATURE_DER, sha256Digest, type AgentIdentity } from "./identity.ts";
 
@@ -101,7 +101,15 @@ export function isSolanaSendIntent(intent: SendIntent): intent is SolanaSendInte
  * may carry a `0x17` memo.
  */
 export function encodeSendIntentTlv(intent: SendIntent, nonce: string): Uint8Array {
+  const network: unknown = intent.network;
+  if (network !== "ethereum" && network !== "solana" && network !== "solana_devnet") {
+    throw new AgentIntentSdkError(`unsupported network "${String(network)}".`);
+  }
   if (isSolanaSendIntent(intent)) return envelope(encodeSolanaSendPayload(intent), nonce);
+  // S2: an EVM send has no memo; refuse one instead of putting it on the wire unsigned.
+  if ((intent as { memo?: unknown }).memo !== undefined) {
+    throw new AgentIntentSdkError("an Ethereum send has no memo.");
+  }
   const sender = evmAddress(intent.sender, "sender");
   const recipient = evmAddress(intent.recipient, "recipient");
   const amount = unsignedMinimal(normalizeAmount(intent.amount));
@@ -109,12 +117,7 @@ export function encodeSendIntentTlv(intent: SendIntent, nonce: string): Uint8Arr
   const description =
     intent.description === undefined
       ? new Uint8Array()
-      : tlv(0x16, utf8(assertDescription(intent.description)));
-  if (intent.network !== "ethereum") {
-    throw new AgentIntentSdkError(
-      `unsupported network "${String((intent as { network: unknown }).network)}".`,
-    );
-  }
+      : tlv(0x16, utf8(assertBoundedText(intent.description, "description")));
 
   const payload = concatBytes(
     tlv(0x11, sender),
@@ -129,7 +132,7 @@ export function encodeSendIntentTlv(intent: SendIntent, nonce: string): Uint8Arr
 }
 
 function encodeSolanaSendPayload(intent: SolanaSendIntent): Uint8Array {
-  if ("feeStrategy" in intent) {
+  if ((intent as { feeStrategy?: unknown }).feeStrategy !== undefined) {
     throw new AgentIntentSdkError("a Solana send has no fee strategy.");
   }
   if (isTokenAsset(intent.asset)) {
@@ -144,8 +147,10 @@ function encodeSolanaSendPayload(intent: SolanaSendIntent): Uint8Array {
     tlv(0x14, encodeAsset(intent.asset)),
     intent.description === undefined
       ? new Uint8Array()
-      : tlv(0x16, utf8(assertDescription(intent.description))),
-    intent.memo === undefined ? new Uint8Array() : tlv(0x17, utf8(assertMemo(intent.memo))),
+      : tlv(0x16, utf8(assertBoundedText(intent.description, "description"))),
+    intent.memo === undefined
+      ? new Uint8Array()
+      : tlv(0x17, utf8(assertBoundedText(intent.memo, "memo"))),
     tlv(0x23, utf8(intent.network)),
   );
 }
@@ -230,7 +235,7 @@ export function normalizeSwapIntent(intent: SwapIntent): SwapIntent {
     provider: identifier(intent.provider, "provider"),
     ...(intent.description === undefined
       ? {}
-      : { description: assertDescription(intent.description) }),
+      : { description: assertBoundedText(intent.description, "description") }),
   };
 }
 
@@ -341,10 +346,11 @@ function unsignedMinimal(value: bigint): Uint8Array {
   return hexToBytes(hex);
 }
 
+/** The service's `Amount` is a positive integer on every network. */
 function normalizeAmount(value: bigint | string): bigint {
   const text = typeof value === "bigint" ? value.toString() : value;
-  if (!/^(0|[1-9][0-9]*)$/.test(text)) {
-    throw new AgentIntentSdkError("amount must be a non-negative decimal integer.");
+  if (!/^[1-9][0-9]*$/.test(text)) {
+    throw new AgentIntentSdkError("amount must be a positive decimal integer.");
   }
   return BigInt(text);
 }
@@ -354,19 +360,22 @@ function normalizeAddress(value: string): string {
 }
 
 /**
- * The 32 bytes a Solana address denotes. Only its canonical spelling is
- * accepted, so the signed bytes pin the exact text the service stores.
+ * The 32 bytes a Solana address denotes. Base58 maps text to bytes one to one
+ * (each leading `1` is a leading zero byte), so any text that decodes to exactly
+ * 32 bytes is the canonical spelling the service re-encodes and stores.
  */
 function solanaAddress(value: string, label: string): Uint8Array {
-  const decoded = base58Decode(value, label);
-  if (decoded.length !== 32) {
+  // 32 bytes take at most 44 base58 digits; refusing longer text first keeps the
+  // quadratic decoder from running on arbitrarily long input.
+  const decoded =
+    value.length <= SOLANA_ADDRESS_MAX_LENGTH ? base58Decode(value, label) : undefined;
+  if (decoded?.length !== 32) {
     throw new AgentIntentSdkError(`${label} must be a 32-byte base58 address.`);
-  }
-  if (base58Encode(decoded) !== value) {
-    throw new AgentIntentSdkError(`${label} must be written in canonical base58.`);
   }
   return decoded;
 }
+
+const SOLANA_ADDRESS_MAX_LENGTH = 44;
 
 function evmAddress(value: string, label: string): Uint8Array {
   return exactHex(value, 20, label);
@@ -378,14 +387,6 @@ function exactHex(value: string, bytes: number, label: string): Uint8Array {
     throw new AgentIntentSdkError(`${label} must contain exactly ${bytes} bytes.`);
   }
   return decoded;
-}
-
-function assertDescription(value: string): string {
-  const length = Array.from(value).length;
-  if (length < 1 || length > 280) {
-    throw new AgentIntentSdkError("description must contain between 1 and 280 characters.");
-  }
-  return value;
 }
 
 // The service's `NaturalAmount`: positive decimal text, no sign, exponent or leading zeros.
@@ -400,10 +401,14 @@ function naturalAmount(value: string, label: string): string {
   return value;
 }
 
-function assertMemo(value: string): string {
-  const length = Array.from(value).length;
-  if (length < 1 || length > 280) {
-    throw new AgentIntentSdkError("memo must contain between 1 and 280 characters.");
+/**
+ * The service bounds a description and a memo with `MaxLength[280]` on a JVM
+ * `String`, which counts UTF-16 code units, as `String.length` does here: a
+ * character outside the Basic Multilingual Plane (most emoji) counts twice.
+ */
+function assertBoundedText(value: string, label: string): string {
+  if (value.length < 1 || value.length > 280) {
+    throw new AgentIntentSdkError(`${label} must contain between 1 and 280 UTF-16 code units.`);
   }
   return value;
 }

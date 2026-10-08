@@ -122,14 +122,32 @@ describe("Solana send signing contract", () => {
       { recipient: base58Encode(new Uint8Array(31).fill(0x22)) },
       "recipient must be a 32-byte base58 address.",
     ],
-    ["a non-base58 address", { sender: `0x${"11".repeat(32)}` }, "sender must be base58."],
+    ["a non-base58 address", { sender: `${SENDER.slice(0, -1)}0` }, "sender must be base58."],
+    [
+      "a hex address",
+      { sender: `0x${"11".repeat(32)}` },
+      "sender must be a 32-byte base58 address.",
+    ],
+    [
+      "an address longer than any 32-byte one",
+      { sender: `1${SENDER}`.padEnd(45, "1") },
+      "sender must be a 32-byte base58 address.",
+    ],
     ["an amount past u64::MAX", { amount: 2n ** 64n }, "amount must not exceed u64::MAX lamports."],
-    ["an empty memo", { memo: "" }, "memo must contain between 1 and 280 characters."],
+    ["a zero amount", { amount: "0" }, "amount must be a positive decimal integer."],
+    ["an empty memo", { memo: "" }, "memo must contain between 1 and 280 UTF-16 code units."],
     [
       "a 281-character memo",
       { memo: "m".repeat(281) },
-      "memo must contain between 1 and 280 characters.",
+      "memo must contain between 1 and 280 UTF-16 code units.",
     ],
+    [
+      // 141 emoji are 141 code points but 282 UTF-16 code units, which the service refuses.
+      "a memo past 280 UTF-16 code units",
+      { memo: "\u{1F4B0}".repeat(141) },
+      "memo must contain between 1 and 280 UTF-16 code units.",
+    ],
+    ["a misspelled network", { network: "solana-devnet" }, 'unsupported network "solana-devnet".'],
     ["a fee strategy", { feeStrategy: "medium" }, "a Solana send has no fee strategy."],
     [
       "an SPL token",
@@ -140,6 +158,31 @@ describe("Solana send signing contract", () => {
     const intent = { ...SOLANA_SEND, ...fields } as unknown as SendIntent;
 
     expect(() => encodeSendIntentTlv(intent, NONCE)).toThrow(message);
+  });
+
+  it("accepts a memo of exactly 280 UTF-16 code units and an undefined fee strategy", () => {
+    const intent = {
+      ...SOLANA_SEND,
+      memo: "\u{1F4B0}".repeat(140),
+      feeStrategy: undefined,
+    } as unknown as SendIntent;
+
+    expect(() => encodeSendIntentTlv(intent, NONCE)).not.toThrow();
+  });
+
+  it("refuses a memo on an Ethereum send rather than submitting it unsigned", () => {
+    const intent = {
+      type: "send",
+      network: "ethereum",
+      sender: "0x" + "11".repeat(20),
+      recipient: "0x" + "22".repeat(20),
+      amount: "1",
+      asset: { type: "native" },
+      feeStrategy: "medium",
+      memo: "Invoice 42",
+    } as unknown as SendIntent;
+
+    expect(() => encodeSendIntentTlv(intent, NONCE)).toThrow("an Ethereum send has no memo.");
   });
 
   it("accepts the largest u64 amount", () => {
