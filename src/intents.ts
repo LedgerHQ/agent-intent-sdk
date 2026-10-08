@@ -1,3 +1,4 @@
+import { base58Decode, base58Encode } from "./base58.ts";
 import { AgentIntentSdkError, bytesToHex, concatBytes, hexToBytes } from "./bytes.ts";
 import { SIGNATURE_DER, sha256Digest, type AgentIdentity } from "./identity.ts";
 
@@ -13,7 +14,7 @@ export type TokenAsset = {
 };
 export type Asset = NativeAsset | TokenAsset;
 
-export type SendIntent = {
+export type EvmSendIntent = {
   type: "send";
   network: "ethereum";
   sender: string;
@@ -24,11 +25,33 @@ export type SendIntent = {
   description?: string;
 };
 
+export type SolanaNetwork = "solana" | "solana_devnet";
+
+/**
+ * A native SOL send. Addresses are canonical base58, `amount` is in lamports
+ * (at most `u64::MAX`), and there is no fee strategy: the service sets the
+ * priority fee itself. `memo` goes on chain with the transfer.
+ */
+export type SolanaSendIntent = {
+  type: "send";
+  network: SolanaNetwork;
+  sender: string;
+  recipient: string;
+  amount: bigint | string;
+  asset: NativeAsset;
+  memo?: string;
+  description?: string;
+};
+
+export type SendIntent = EvmSendIntent | SolanaSendIntent;
+
 export type SignedCreateIntent = {
   issuer: string;
   signature: string;
   nonce: string;
-  intent: Omit<SendIntent, "amount"> & { amount: string };
+  intent:
+    | (Omit<EvmSendIntent, "amount"> & { amount: string })
+    | (Omit<SolanaSendIntent, "amount"> & { amount: string });
 };
 
 /** EVM networks the Agent Intent service accepts a Swap on. */
@@ -67,7 +90,18 @@ export function createNonce(
   return bytesToHex(nonce);
 }
 
+export function isSolanaSendIntent(intent: SendIntent): intent is SolanaSendIntent {
+  return intent.network === "solana" || intent.network === "solana_devnet";
+}
+
+/**
+ * The canonical TLV an agent signs. A Solana send uses the same envelope and
+ * payload layout as an EVM one (agent-intent-service ADR-0002): its addresses
+ * are the 32 bytes their base58 denotes, it has no `0x15` fee strategy, and it
+ * may carry a `0x17` memo.
+ */
 export function encodeSendIntentTlv(intent: SendIntent, nonce: string): Uint8Array {
+  if (isSolanaSendIntent(intent)) return envelope(encodeSolanaSendPayload(intent), nonce);
   const sender = evmAddress(intent.sender, "sender");
   const recipient = evmAddress(intent.recipient, "recipient");
   const amount = unsignedMinimal(normalizeAmount(intent.amount));
@@ -77,7 +111,9 @@ export function encodeSendIntentTlv(intent: SendIntent, nonce: string): Uint8Arr
       ? new Uint8Array()
       : tlv(0x16, utf8(assertDescription(intent.description)));
   if (intent.network !== "ethereum") {
-    throw new AgentIntentSdkError(`unsupported network "${String(intent.network)}".`);
+    throw new AgentIntentSdkError(
+      `unsupported network "${String((intent as { network: unknown }).network)}".`,
+    );
   }
 
   const payload = concatBytes(
@@ -89,6 +125,32 @@ export function encodeSendIntentTlv(intent: SendIntent, nonce: string): Uint8Arr
     description,
     tlv(0x23, utf8(intent.network)),
   );
+  return envelope(payload, nonce);
+}
+
+function encodeSolanaSendPayload(intent: SolanaSendIntent): Uint8Array {
+  if ("feeStrategy" in intent) {
+    throw new AgentIntentSdkError("a Solana send has no fee strategy.");
+  }
+  if (isTokenAsset(intent.asset)) {
+    throw new AgentIntentSdkError("only native SOL sends are supported on Solana.");
+  }
+  const amount = normalizeAmount(intent.amount);
+  if (amount > U64_MAX) throw new AgentIntentSdkError("amount must not exceed u64::MAX lamports.");
+  return concatBytes(
+    tlv(0x11, solanaAddress(intent.sender, "sender")),
+    tlv(0x12, solanaAddress(intent.recipient, "recipient")),
+    tlv(0x13, unsignedMinimal(amount)),
+    tlv(0x14, encodeAsset(intent.asset)),
+    intent.description === undefined
+      ? new Uint8Array()
+      : tlv(0x16, utf8(assertDescription(intent.description))),
+    intent.memo === undefined ? new Uint8Array() : tlv(0x17, utf8(assertMemo(intent.memo))),
+    tlv(0x23, utf8(intent.network)),
+  );
+}
+
+function envelope(payload: Uint8Array, nonce: string): Uint8Array {
   return tlv(
     0xc1,
     concatBytes(
@@ -105,7 +167,31 @@ export function signCreateIntent(
   intent: SendIntent,
   nonce = createNonce(),
 ): SignedCreateIntent {
-  const normalizedIntent = {
+  const tlvBytes = encodeSendIntentTlv(intent, nonce);
+  return {
+    issuer: identity.publicKey,
+    signature: bytesToHex(identity.signDigest(sha256Digest(tlvBytes), SIGNATURE_DER)),
+    nonce,
+    intent: isSolanaSendIntent(intent) ? solanaWireIntent(intent) : evmWireIntent(intent),
+  };
+}
+
+/** Solana addresses are already canonical (the encoder refused any other spelling). */
+function solanaWireIntent(intent: SolanaSendIntent): SignedCreateIntent["intent"] {
+  return {
+    type: "send",
+    network: intent.network,
+    sender: intent.sender,
+    recipient: intent.recipient,
+    amount: normalizeAmount(intent.amount).toString(),
+    asset: { type: "native" },
+    ...(intent.memo === undefined ? {} : { memo: intent.memo }),
+    ...(intent.description === undefined ? {} : { description: intent.description }),
+  };
+}
+
+function evmWireIntent(intent: EvmSendIntent): SignedCreateIntent["intent"] {
+  return {
     ...intent,
     sender: normalizeAddress(intent.sender),
     recipient: normalizeAddress(intent.recipient),
@@ -121,13 +207,6 @@ export function signCreateIntent(
           },
         }
       : { asset: { type: "native" as const } }),
-  };
-  const tlvBytes = encodeSendIntentTlv(intent, nonce);
-  return {
-    issuer: identity.publicKey,
-    signature: bytesToHex(identity.signDigest(sha256Digest(tlvBytes), SIGNATURE_DER)),
-    nonce,
-    intent: normalizedIntent,
   };
 }
 
@@ -274,6 +353,21 @@ function normalizeAddress(value: string): string {
   return bytesToHex(evmAddress(value, "address"));
 }
 
+/**
+ * The 32 bytes a Solana address denotes. Only its canonical spelling is
+ * accepted, so the signed bytes pin the exact text the service stores.
+ */
+function solanaAddress(value: string, label: string): Uint8Array {
+  const decoded = base58Decode(value, label);
+  if (decoded.length !== 32) {
+    throw new AgentIntentSdkError(`${label} must be a 32-byte base58 address.`);
+  }
+  if (base58Encode(decoded) !== value) {
+    throw new AgentIntentSdkError(`${label} must be written in canonical base58.`);
+  }
+  return decoded;
+}
+
 function evmAddress(value: string, label: string): Uint8Array {
   return exactHex(value, 20, label);
 }
@@ -306,12 +400,22 @@ function naturalAmount(value: string, label: string): string {
   return value;
 }
 
+function assertMemo(value: string): string {
+  const length = Array.from(value).length;
+  if (length < 1 || length > 280) {
+    throw new AgentIntentSdkError("memo must contain between 1 and 280 characters.");
+  }
+  return value;
+}
+
 function identifier(value: string, label: string): string {
   if (value.length === 0 || value !== value.trim()) {
     throw new AgentIntentSdkError(`${label} must be non-empty with no surrounding whitespace.`);
   }
   return value;
 }
+
+const U64_MAX = 2n ** 64n - 1n;
 
 function utf8(value: string): Uint8Array {
   return textEncoder.encode(value.normalize("NFC"));

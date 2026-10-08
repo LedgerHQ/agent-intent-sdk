@@ -56,6 +56,22 @@ const deeplink = await client.createSendIntent({
 Amounts accept decimal strings or `bigint` and are serialized as exact JSON
 integers to avoid JavaScript precision loss.
 
+A native SOL send uses `network: "solana"` (or `"solana_devnet"`), canonical
+base58 addresses and an amount in lamports. It has no fee strategy, because the
+service sets the priority fee, and it may carry an on-chain `memo`:
+
+```ts
+const deeplink = await client.createSendIntent({
+  type: "send",
+  network: "solana",
+  sender,
+  recipient,
+  amount: "10000000", // 0.01 SOL
+  asset: { type: "native" },
+  memo: "Invoice 42",
+});
+```
+
 ### Swap intents
 
 ```ts
