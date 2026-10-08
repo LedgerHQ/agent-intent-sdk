@@ -7,6 +7,7 @@ import {
 } from "./auth.ts";
 import { AgentIntentSdkError } from "./bytes.ts";
 import type { AgentIdentity } from "./identity.ts";
+import { withAgentUserAgent } from "./userAgent.ts";
 import {
   isAgentIntentPageSize,
   isAgentIntentStatus,
@@ -63,14 +64,15 @@ export function createAgentIntentClient(input: {
   fetch?: typeof globalThis.fetch;
   authFetch?: typeof globalThis.fetch;
 }): AgentIntentClient {
-  const fetcher = input.fetch ?? globalThis.fetch;
+  const baseFetch = input.fetch ?? globalThis.fetch;
+  const fetcher = withAgentUserAgent(baseFetch);
   const tokenProvider =
     input.tokenProvider ??
     createAgentTokenProvider({
       identity: input.identity,
       trustchainId: input.trustchainId,
       keycloak: input.keycloak ?? AGENT_KEYCLOAK_ENVIRONMENTS[input.environment],
-      fetch: input.authFetch ?? fetcher,
+      fetch: input.authFetch ?? baseFetch,
     });
   const endpoint = new URL("v1/intents", withTrailingSlash(input.bffBaseUrl));
 

@@ -1,5 +1,6 @@
 import { AgentIntentSdkError, bytesToHex, concatBytes, hexToBytes } from "./bytes.ts";
 import { SIGNATURE_DER, sha256Digest, type AgentIdentity } from "./identity.ts";
+import { nodeProcess, withAgentUserAgent } from "./userAgent.ts";
 
 export type AgentIntentEnvironment = "staging" | "production";
 
@@ -44,7 +45,7 @@ export function createAgentTokenProvider(input: {
   keycloak: AgentKeycloakConfig;
   fetch?: typeof globalThis.fetch;
 }): AccessTokenProvider {
-  const fetcher = withNodeCookieJar(input.fetch ?? globalThis.fetch);
+  const fetcher = withAgentUserAgent(withNodeCookieJar(input.fetch ?? globalThis.fetch));
   let token: Promise<{ accessToken: string; expiresAt?: number }> | undefined;
 
   const acquire = async (force = false) => {
@@ -290,8 +291,7 @@ type StoredCookie = {
 };
 
 function withNodeCookieJar(fetcher: typeof globalThis.fetch): typeof globalThis.fetch {
-  const nodeProcess = (globalThis as { process?: { versions?: { node?: string } } }).process;
-  if (!nodeProcess?.versions?.node) return fetcher;
+  if (!nodeProcess()) return fetcher;
 
   const cookies = new Map<string, StoredCookie>();
   return async (input, initialInit) => {
