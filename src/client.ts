@@ -52,6 +52,12 @@ export type AgentIntentClient = {
   getIntent(intentId: string): Promise<AgentIntentRecord>;
   createSwapIntent(intent: SwapIntent): Promise<string>;
   createSignedSwapIntent(intent: SwapIntent, nonce?: string): SignedSwapIntent;
+  /**
+   * Cancels an intent this agent issued, while it is `created` or `crafted`; it can't be undone.
+   * Resolves once the intent is cancelled, also when it already was. Any other state throws
+   * `AgentIntentHttpError` with status 400, and an unknown id or another agent's intent 404.
+   */
+  cancelIntent(intentId: string): Promise<void>;
 };
 
 export function createAgentIntentClient(input: {
@@ -142,11 +148,7 @@ export function createAgentIntentClient(input: {
       return parseAgentIntentPage(body, response.headers.get("X-Ledger-Next"));
     },
     getIntent: async (intentId) => {
-      // encodeURIComponent keeps "." and "..", which URL resolution would turn into another endpoint.
-      if (intentId === "" || intentId === "." || intentId === "..") {
-        throw new AgentIntentSdkError(`Invalid intent id: "${intentId}".`);
-      }
-      const url = new URL(encodeURIComponent(intentId), withTrailingSlash(endpoint.href));
+      const url = intentUrl(endpoint, intentId);
       const response = await tokenProvider.withAccessToken(
         (accessToken) =>
           fetcher(url, {
@@ -159,7 +161,28 @@ export function createAgentIntentClient(input: {
       if (!response.ok) throw httpError(response, body);
       return parseAgentIntentRecord(body);
     },
+    cancelIntent: async (intentId) => {
+      const url = new URL("cancel", withTrailingSlash(intentUrl(endpoint, intentId).href));
+      const response = await tokenProvider.withAccessToken(
+        (accessToken) =>
+          fetcher(url, {
+            method: "POST",
+            headers: { Accept: "application/json", Authorization: `Bearer ${accessToken}` },
+          }),
+        (candidate) => candidate.status === 401,
+      );
+      const body = await response.text();
+      if (!response.ok) throw httpError(response, body);
+    },
   };
+}
+
+function intentUrl(endpoint: URL, intentId: string): URL {
+  // encodeURIComponent keeps "." and "..", which URL resolution would turn into another endpoint.
+  if (intentId === "" || intentId === "." || intentId === "..") {
+    throw new AgentIntentSdkError(`Invalid intent id: "${intentId}".`);
+  }
+  return new URL(encodeURIComponent(intentId), withTrailingSlash(endpoint.href));
 }
 
 export function staticAccessTokenProvider(accessToken: string): AccessTokenProvider {
