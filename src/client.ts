@@ -45,10 +45,6 @@ export type AgentIntentClient = {
   createSendIntent(intent: SendIntent): Promise<string>;
   createSignedIntent(intent: SendIntent, nonce?: string): SignedCreateIntent;
   listIntents(query?: ListAgentIntentsQuery): Promise<AgentIntentPage>;
-  /**
-   * Reads one intent this agent issued. The BFF answers 404, as `AgentIntentHttpError`, both for an
-   * unknown id and for another agent's intent, so the two can't be told apart.
-   */
   getIntent(intentId: string): Promise<AgentIntentRecord>;
 };
 
@@ -133,8 +129,7 @@ export function createAgentIntentClient(input: {
       return parseAgentIntentPage(body, response.headers.get("X-Ledger-Next"));
     },
     getIntent: async (intentId) => {
-      // `encodeURIComponent` keeps "." and "..", which URL resolution would turn into the
-      // collection or a parent path, and "" would read the listing.
+      // encodeURIComponent keeps "." and "..", which URL resolution would turn into another endpoint.
       if (intentId === "" || intentId === "." || intentId === "..") {
         throw new AgentIntentSdkError(`Invalid intent id: "${intentId}".`);
       }

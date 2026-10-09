@@ -81,7 +81,6 @@ export function parseAgentIntentPage(body: string, nextCursor: string | null): A
   return nextCursor ? { intents: parsed, nextCursor } : { intents: parsed };
 }
 
-/** Parses one intent, as `GET /v1/intents/{intentId}` returns it. */
 export function parseAgentIntentRecord(body: string): AgentIntentRecord {
   const parsed = parseJson(body, "an intent");
   if (!isAgentIntentRecord(parsed)) {
