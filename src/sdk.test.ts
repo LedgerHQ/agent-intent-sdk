@@ -728,16 +728,16 @@ describe("agent intent lookup", () => {
     },
   );
 
-  it("keeps every digit of an amount sent as a JSON number", async () => {
+  it("rejects an amount sent as a JSON number", async () => {
     const body = JSON.stringify(RECORD).replace(
       '"amount":"1000000000000000"',
       '"amount":9007199254740993',
     );
     const { client } = lookupClient(new Response(body, { status: 200 }));
 
-    await expect(client.getIntent(RECORD.id)).resolves.toMatchObject({
-      intent: { amount: "9007199254740993" },
-    });
+    await expect(client.getIntent(RECORD.id)).rejects.toThrow(
+      "BFF returned an intent with an unexpected shape.",
+    );
   });
 
   it("reports an unknown or foreign intent as a 404 HTTP error", async () => {
