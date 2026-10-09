@@ -76,6 +76,16 @@ ignored. Amounts (`amount`, `fromAmount`, `toAmount`) are always exact decimal
 strings. HTTP failures throw `AgentIntentHttpError` with the BFF's `status` and
 `type`.
 
+## Read one intent
+
+```ts
+const intent = await client.getIntent(intentId);
+console.log(intent.status, intent.updatedAt);
+```
+
+An unknown id and another agent's intent both fail with `AgentIntentHttpError`
+`status` 404. Amounts are exact decimal strings, as in the listing.
+
 ## Enrollment fingerprint
 
 Display the same fingerprint that the Ledger device shows:

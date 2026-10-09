@@ -11,7 +11,9 @@ import {
   isAgentIntentPageSize,
   isAgentIntentStatus,
   parseAgentIntentPage,
+  parseAgentIntentRecord,
   type AgentIntentPage,
+  type AgentIntentRecord,
   type ListAgentIntentsQuery,
 } from "./intentPage.ts";
 import {
@@ -43,6 +45,7 @@ export type AgentIntentClient = {
   createSendIntent(intent: SendIntent): Promise<string>;
   createSignedIntent(intent: SendIntent, nonce?: string): SignedCreateIntent;
   listIntents(query?: ListAgentIntentsQuery): Promise<AgentIntentPage>;
+  getIntent(intentId: string): Promise<AgentIntentRecord>;
 };
 
 export function createAgentIntentClient(input: {
@@ -124,6 +127,24 @@ export function createAgentIntentClient(input: {
       const body = await response.text();
       if (!response.ok) throw httpError(response, body);
       return parseAgentIntentPage(body, response.headers.get("X-Ledger-Next"));
+    },
+    getIntent: async (intentId) => {
+      // encodeURIComponent keeps "." and "..", which URL resolution would turn into another endpoint.
+      if (intentId === "" || intentId === "." || intentId === "..") {
+        throw new AgentIntentSdkError(`Invalid intent id: "${intentId}".`);
+      }
+      const url = new URL(encodeURIComponent(intentId), withTrailingSlash(endpoint.href));
+      const response = await tokenProvider.withAccessToken(
+        (accessToken) =>
+          fetcher(url, {
+            method: "GET",
+            headers: { Accept: "application/json", Authorization: `Bearer ${accessToken}` },
+          }),
+        (candidate) => candidate.status === 401,
+      );
+      const body = await response.text();
+      if (!response.ok) throw httpError(response, body);
+      return parseAgentIntentRecord(body);
     },
   };
 }
