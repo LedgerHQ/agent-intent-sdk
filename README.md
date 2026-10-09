@@ -112,13 +112,9 @@ An unknown id and another agent's intent both fail with `AgentIntentHttpError`
 await client.cancelIntent(intentId);
 ```
 
-An agent can cancel an intent it issued while the user has not signed it yet,
-that is while it is `created` or `crafted`. Cancellation can't be undone, and
-a signed intent can't be edited: to change one, cancel it and create a new one.
-Cancelling an intent that is already `cancelled` succeeds. Any other state
-fails with `AgentIntentHttpError` (`status` 400), since a signed transaction
-may still land on-chain; read the intent to see its state. An unknown id and
-another agent's intent fail with `status` 404, as for `getIntent`.
+Only a `created` or `crafted` intent can be cancelled, and a repeat succeeds;
+any other state fails with `AgentIntentHttpError` `status` 400. A signed intent
+can't be edited: cancel it and create a new one.
 
 ## User-Agent
 

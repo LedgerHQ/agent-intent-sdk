@@ -52,11 +52,6 @@ export type AgentIntentClient = {
   getIntent(intentId: string): Promise<AgentIntentRecord>;
   createSwapIntent(intent: SwapIntent): Promise<string>;
   createSignedSwapIntent(intent: SwapIntent, nonce?: string): SignedSwapIntent;
-  /**
-   * Cancels an intent this agent issued, while it is `created` or `crafted`; it can't be undone.
-   * Resolves once the intent is cancelled, also when it already was. Any other state throws
-   * `AgentIntentHttpError` with status 400, and an unknown id or another agent's intent 404.
-   */
   cancelIntent(intentId: string): Promise<void>;
 };
 
