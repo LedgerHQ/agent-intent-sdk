@@ -73,7 +73,7 @@ that agent issued, most recent first. `status` takes any of
 10, 50, 100; the BFF defaults to 10). `nextCursor` is opaque; when you pass it
 back, the first page's filters and page size apply and the other options are
 ignored. Amounts (`amount`, `fromAmount`, `toAmount`) are always exact decimal
-strings, also from an older BFF that sends them as JSON numbers. HTTP failures
+strings. HTTP failures
 throw `AgentIntentHttpError` with the BFF's `status` and `type`.
 
 ## Enrollment fingerprint

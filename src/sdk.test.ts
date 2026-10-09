@@ -528,20 +528,11 @@ describe("agent intent listing", () => {
     );
   });
 
-  it("keeps every digit of amounts an older BFF encodes as JSON numbers", async () => {
-    const body =
-      '[{"id":"i1","agentPubkey":"02agent","status":"created","createdAt":"t","updatedAt":"t",' +
-      '"intent":{"type":"send","amount":1000000000000000000001,"description":"\\"amount\\":1"}},' +
-      '{"id":"i2","agentPubkey":"02agent","status":"created","createdAt":"t","updatedAt":"t",' +
-      '"intent":{"type":"swap","fromAmount":9007199254740993,"toAmount":"42"}}]';
-    const { client } = listingClient(new Response(body, { status: 200 }));
+  it("keeps a description that looks like an amount as it is", async () => {
+    const record = { ...RECORD, intent: { ...RECORD.intent, description: 'pay "amount":1, now' } };
+    const { client } = listingClient(new Response(JSON.stringify([record]), { status: 200 }));
 
-    const page = await client.listIntents();
-
-    expect(page.intents.map(({ intent }) => intent)).toEqual([
-      { type: "send", amount: "1000000000000000000001", description: '"amount":1' },
-      { type: "swap", fromAmount: "9007199254740993", toAmount: "42" },
-    ]);
+    await expect(client.listIntents()).resolves.toEqual({ intents: [record] });
   });
 
   it("rejects a listing with the wrong shape", async () => {
@@ -553,10 +544,7 @@ describe("agent intent listing", () => {
   });
 
   it("rejects a listing that is not valid JSON, keeping the parse error as the cause", async () => {
-    const body =
-      '[{"id":"i1","agentPubkey":"02agent","status":"created","createdAt":"t","updatedAt":"t",' +
-      '"intent":{"type":"send","amount":01}}]';
-    const { client } = listingClient(new Response(body, { status: 200 }));
+    const { client } = listingClient(new Response('[{"id":"i1",', { status: 200 }));
 
     const error = await client.listIntents().catch((cause: unknown) => cause);
     expect(error).toBeInstanceOf(AgentIntentSdkError);
@@ -567,6 +555,9 @@ describe("agent intent listing", () => {
   });
 
   it.each([
+    ["amount sent as a JSON number", { amount: 1000000000000000 }],
+    ["fromAmount sent as a JSON number", { fromAmount: 1 }],
+    ["toAmount sent as a JSON number", { toAmount: 42 }],
     ["network", { network: 7 }],
     ["sender", { sender: false }],
     ["recipient", { recipient: {} }],
@@ -590,6 +581,22 @@ describe("agent intent listing", () => {
     const { client } = listingClient(new Response(JSON.stringify([record]), { status: 200 }));
 
     await expect(client.listIntents()).resolves.toEqual({ intents: [record] });
+  });
+
+  it("filters on cancelled intents", async () => {
+    const record = { ...RECORD, status: "cancelled" };
+    const { client, fetcher } = listingClient(
+      new Response(JSON.stringify([record]), { status: 200 }),
+    );
+
+    await expect(client.listIntents({ status: ["cancelled"] })).resolves.toEqual({
+      intents: [record],
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledWith(
+      new URL("https://bff.example/agent-intent/v1/intents?status=cancelled"),
+      expect.anything(),
+    );
   });
 
   it("treats an empty cursor as a first page and sends the filters", async () => {

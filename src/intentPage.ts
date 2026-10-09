@@ -9,6 +9,7 @@ export const AGENT_INTENT_STATUSES = [
   "success",
   "failed",
   "rejected",
+  "cancelled",
   "expired",
 ] as const;
 
@@ -71,9 +72,6 @@ export type AgentIntentPage = {
   nextCursor?: string;
 };
 
-// Only valid JSON integers: a malformed number such as `01` is left for `JSON.parse` to reject.
-const AMOUNT_NUMBER = /("(?:amount|fromAmount|toAmount)"\s*:\s*)(0|[1-9]\d*)(?=\s*[,}])/g;
-
 const OPTIONAL_STRING_FIELDS = [
   "network",
   "sender",
@@ -85,14 +83,11 @@ const OPTIONAL_STRING_FIELDS = [
   "description",
 ] as const;
 
-/**
- * Parses an intent listing body. An older BFF encodes amounts as JSON numbers; they are turned into
- * strings before `JSON.parse` so amounts above 2^53 keep every digit.
- */
+/** Parses an intent listing body. The BFF sends amounts as strings; a number is an unexpected shape. */
 export function parseAgentIntentPage(body: string, nextCursor: string | null): AgentIntentPage {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(body.replace(AMOUNT_NUMBER, '$1"$2"'));
+    parsed = JSON.parse(body);
   } catch (cause) {
     throw new AgentIntentSdkError("BFF returned an intent listing that is not valid JSON.", {
       cause,
