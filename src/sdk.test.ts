@@ -849,7 +849,7 @@ describe("agent intent cancellation", () => {
   });
 
   it.each([
-    [400, "illegal_transition", "Intent cannot be cancelled"],
+    [400, undefined, "Intent cannot be cancelled"],
     [404, undefined, "Intent not found"],
   ])("reports a %i from the BFF as an HTTP error", async (status, type, message) => {
     const { client } = cancelClient(new Response(JSON.stringify({ message, type }), { status }));
