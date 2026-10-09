@@ -42,7 +42,6 @@ export type AgentIntentClient = {
   readonly publicKey: string;
   createSendIntent(intent: SendIntent): Promise<string>;
   createSignedIntent(intent: SendIntent, nonce?: string): SignedCreateIntent;
-  /** Lists only the intents this agent issued, most recent first. The BFF scopes it to the agent. */
   listIntents(query?: ListAgentIntentsQuery): Promise<AgentIntentPage>;
 };
 

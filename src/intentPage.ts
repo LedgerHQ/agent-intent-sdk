@@ -1,6 +1,5 @@
 import { AgentIntentSdkError } from "./bytes.ts";
 
-/** Lifecycle states the BFF reports for an intent. */
 export const AGENT_INTENT_STATUSES = [
   "created",
   "crafted",
@@ -15,7 +14,6 @@ export const AGENT_INTENT_STATUSES = [
 
 export type AgentIntentStatus = (typeof AGENT_INTENT_STATUSES)[number];
 
-/** Page sizes the BFF accepts for intent listings. */
 export const AGENT_INTENT_PAGE_SIZES = [1, 5, 10, 50, 100] as const;
 
 export type AgentIntentPageSize = (typeof AGENT_INTENT_PAGE_SIZES)[number];
@@ -28,11 +26,7 @@ export function isAgentIntentPageSize(value: unknown): value is AgentIntentPageS
   return (AGENT_INTENT_PAGE_SIZES as readonly unknown[]).includes(value);
 }
 
-/**
- * The operation an intent proposes, as the BFF returns it. Amounts (`amount`, and `fromAmount` /
- * `toAmount` for swaps) are always exact decimal strings of base units. Fields depend on `type`, and
- * a newer BFF may add some, so only `type` is guaranteed.
- */
+/** Fields depend on `type` and a newer BFF may add some, so only `type` is guaranteed. */
 export type AgentIntentOperation = {
   type: string;
   network?: string;
@@ -45,7 +39,7 @@ export type AgentIntentOperation = {
   [field: string]: unknown;
 };
 
-/** One intent from an agent's listing. `status` is a string so a newer BFF state never breaks parsing. */
+/** `status` stays open so that a state a newer BFF adds never breaks parsing. */
 export type AgentIntentRecord = {
   id: string;
   agentPubkey: string;
@@ -57,18 +51,14 @@ export type AgentIntentRecord = {
 };
 
 export type ListAgentIntentsQuery = {
-  /** Keep only intents in one of these states. Ignored when `cursor` is set. */
   status?: readonly AgentIntentStatus[];
-  /** Ignored when `cursor` is set: the cursor keeps the first page's size. */
   pageSize?: AgentIntentPageSize;
-  /** Opaque continuation token from a previous page's `nextCursor`. */
+  /** A page's `nextCursor`; when set, the first page's `status` and `pageSize` apply. */
   cursor?: string;
 };
 
 export type AgentIntentPage = {
-  /** Most recent first. */
   intents: AgentIntentRecord[];
-  /** Pass back as `cursor` to fetch the next page; absent on the last page. */
   nextCursor?: string;
 };
 
@@ -83,7 +73,6 @@ const OPTIONAL_STRING_FIELDS = [
   "description",
 ] as const;
 
-/** Parses an intent listing body. The BFF sends amounts as strings; a number is an unexpected shape. */
 export function parseAgentIntentPage(body: string, nextCursor: string | null): AgentIntentPage {
   let parsed: unknown;
   try {
