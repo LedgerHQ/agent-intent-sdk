@@ -17,5 +17,6 @@ export {
 } from "./enrollmentChannel.ts";
 export * from "./fingerprint.ts";
 export * from "./identity.ts";
+export * from "./intentPage.ts";
 export * from "./intents.ts";
 export * from "./recovery.ts";
