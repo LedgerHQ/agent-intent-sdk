@@ -22,6 +22,7 @@ import {
   signSwapIntent,
   type SendIntent,
   type SignedCreateIntent,
+  type SignedSwapIntent,
   type SwapIntent,
 } from "./intents.ts";
 
@@ -49,6 +50,7 @@ export type AgentIntentClient = {
   listIntents(query?: ListAgentIntentsQuery): Promise<AgentIntentPage>;
   getIntent(intentId: string): Promise<AgentIntentRecord>;
   createSwapIntent(intent: SwapIntent): Promise<string>;
+  createSignedSwapIntent(intent: SwapIntent, nonce?: string): SignedSwapIntent;
 };
 
 export function createAgentIntentClient(input: {
@@ -107,6 +109,7 @@ export function createAgentIntentClient(input: {
       submitIntent(serializeCreateIntent(signCreateIntent(input.identity, intent))),
     createSwapIntent: async (intent) =>
       submitIntent(JSON.stringify(signSwapIntent(input.identity, intent))),
+    createSignedSwapIntent: (intent, nonce) => signSwapIntent(input.identity, intent, nonce),
     listIntents: async (query = {}) => {
       const url = new URL(endpoint);
       // An empty cursor means "no next page", like an empty `X-Ledger-Next`.

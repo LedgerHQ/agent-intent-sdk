@@ -248,6 +248,15 @@ describe("agent client swap intents", () => {
     expect(verifies(String(body.issuer), String(body.signature), signedBytes(body))).toBe(true);
   });
 
+  it("signs a swap without submitting it", () => {
+    const fetcher = vi.fn<typeof fetch>();
+
+    expect(clientFor(fetcher).createSignedSwapIntent(SWAP, NONCE)).toEqual(
+      signSwapIntent(createSoftwareAgentIdentity(SECRET_KEY), SWAP, NONCE),
+    );
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("sends amounts as JSON strings so no digit is lost", async () => {
     const fetcher = vi
       .fn<typeof fetch>()
