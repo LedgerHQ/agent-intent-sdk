@@ -162,6 +162,7 @@ export function createAgentIntentClient(input: {
         (accessToken) =>
           fetcher(url, {
             method: "POST",
+            // The 204 has no body; Accept is for the JSON error body.
             headers: { Accept: "application/json", Authorization: `Bearer ${accessToken}` },
           }),
         (candidate) => candidate.status === 401,

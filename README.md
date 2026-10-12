@@ -108,13 +108,17 @@ An unknown id and another agent's intent both fail with `AgentIntentHttpError`
 
 ## Cancel an intent
 
+An agent can withdraw an intent it created, as long as the user hasn't acted on it:
+
 ```ts
 await client.cancelIntent(intentId);
 ```
 
-Only a `created` or `crafted` intent can be cancelled, and a repeat succeeds;
-any other state fails with `AgentIntentHttpError` `status` 400. An intent can't
-be edited: to change one, cancel it before the user signs and create a new one.
+A `created` or `crafted` intent can be cancelled, and cancelling an already
+cancelled one also succeeds. Any other state, including one the user rejected or
+signed, fails with `AgentIntentHttpError` `status` 400 and no `type`; call
+`getIntent` to see which. Only the user rejects, in Ledger's interface. An intent
+can't be edited: to change one, cancel it and create a new one.
 
 ## User-Agent
 
