@@ -48,7 +48,6 @@ export type AgentIntentClient = {
   createSignedIntent(intent: SendIntent, nonce?: string): SignedCreateIntent;
   listIntents(query?: ListAgentIntentsQuery): Promise<AgentIntentPage>;
   getIntent(intentId: string): Promise<AgentIntentRecord>;
-  /** Signs and submits a Swap, then returns the frontend deeplink the user reviews it at. */
   createSwapIntent(intent: SwapIntent): Promise<string>;
 };
 
@@ -106,7 +105,6 @@ export function createAgentIntentClient(input: {
     // async so a validation error rejects the promise instead of throwing synchronously.
     createSendIntent: async (intent) =>
       submitIntent(serializeCreateIntent(signCreateIntent(input.identity, intent))),
-    // Swap amounts are decimal strings on the wire, so plain JSON keeps them exact.
     createSwapIntent: async (intent) =>
       submitIntent(JSON.stringify(signSwapIntent(input.identity, intent))),
     listIntents: async (query = {}) => {

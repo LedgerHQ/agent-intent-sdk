@@ -58,10 +58,6 @@ integers to avoid JavaScript precision loss.
 
 ### Swap intents
 
-A Swap asks the user to trade one asset for another through a Swap API
-provider. The agent proposes the pair, the amounts and the provider; the user's
-frontend fetches the route and crafts the transaction when they review it.
-
 ```ts
 const deeplink = await client.createSwapIntent({
   type: "swap",
@@ -76,18 +72,9 @@ const deeplink = await client.createSwapIntent({
 });
 ```
 
-- `network` is one of `SWAP_INTENT_NETWORKS`: `ethereum`, `ethereum_sepolia`
-  or `arc_testnet`.
-- `fromAsset` and `toAsset` are Ledger currency ids. The service treats them,
-  and `provider`, as opaque text.
-- `fromAmount` and `toAmount` are human-unit decimal strings (`"0.5"` ETH, not
-  wei) with no sign, exponent or leading zeros. They are sent as JSON strings,
-  so no digit is lost.
-- The sender is signed and submitted as lowercase `0x` hex.
-
-`normalizeSwapIntent` validates a Swap without signing it,
-`encodeSwapIntentTlv` returns the canonical bytes, and `signSwapIntent` returns
-the signed request body.
+`network` is one of `SWAP_INTENT_NETWORKS` (`ethereum`, `ethereum_sepolia`,
+`arc_testnet`). `fromAmount` and `toAmount` are human-unit decimal strings
+(`"0.5"` ETH, not wei).
 
 ## List the agent's intents
 

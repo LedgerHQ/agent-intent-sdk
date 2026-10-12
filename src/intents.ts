@@ -38,17 +38,12 @@ export type SwapIntentNetwork = (typeof SWAP_INTENT_NETWORKS)[number];
 export type SwapIntent = {
   type: "swap";
   network: SwapIntentNetwork;
-  /** EVM address of the account that sells `fromAsset`. */
   sender: string;
-  /** Ledger currency id of the asset sold, for example `ethereum`. */
   fromAsset: string;
-  /** Ledger currency id of the asset bought, for example `ethereum/erc20/usd__coin`. */
   toAsset: string;
-  /** Amount sold, as human-unit decimal text such as `0.1`, not base units. */
+  // Human-unit decimals such as "0.1", not base units.
   fromAmount: string;
-  /** Amount the agent expects to receive, as human-unit decimal text. */
   toAmount: string;
-  /** Swap API provider key, for example `oneinch`. */
   provider: string;
   description?: string;
 };
@@ -136,11 +131,6 @@ export function signCreateIntent(
   };
 }
 
-/**
- * Validates a Swap and returns the canonical form the agent signs and submits:
- * the sender becomes lowercase `0x`-prefixed hex, and every other field is kept
- * as given once it passes the service's rules.
- */
 export function normalizeSwapIntent(intent: SwapIntent): SwapIntent {
   if (!(SWAP_INTENT_NETWORKS as readonly string[]).includes(intent.network)) {
     throw new AgentIntentSdkError(
