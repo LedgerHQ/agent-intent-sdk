@@ -849,14 +849,20 @@ describe("agent intent cancellation", () => {
   });
 
   it.each([
-    [400, undefined, "Intent cannot be cancelled"],
-    [404, undefined, "Intent not found"],
-  ])("reports a %i from the BFF as an HTTP error", async (status, type, message) => {
-    const { client } = cancelClient(new Response(JSON.stringify({ message, type }), { status }));
+    [400, "Illegal transition from IntentRejected to IntentCancelled"],
+    [404, "Intent not found"],
+  ])("reports a %i from the BFF as an HTTP error without a type", async (status, message) => {
+    const { client } = cancelClient(new Response(JSON.stringify({ message }), { status }));
 
     const error = await client.cancelIntent(INTENT_ID).catch((cause: unknown) => cause);
     expect(error).toBeInstanceOf(AgentIntentHttpError);
-    expect(error).toMatchObject({ status, type, message });
+    expect(error).toMatchObject({ status, type: undefined, message });
+  });
+
+  it("resolves when the service reports the intent already cancelled", async () => {
+    const { client } = cancelClient(new Response(null, { status: 204 }));
+
+    await expect(client.cancelIntent(INTENT_ID)).resolves.toBeUndefined();
   });
 
   it("retries once with a fresh token after a 401", async () => {
@@ -873,5 +879,17 @@ describe("agent intent cancellation", () => {
         headers: expect.objectContaining({ Authorization: "Bearer fresh-token" }),
       }),
     );
+  });
+
+  it("gives up when the retry also gets a 401", async () => {
+    const { client, fetcher } = cancelClient(
+      new Response(null, { status: 401 }),
+      new Response(null, { status: 401 }),
+    );
+
+    const error = await client.cancelIntent(INTENT_ID).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(AgentIntentHttpError);
+    expect(error).toMatchObject({ status: 401 });
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 });
