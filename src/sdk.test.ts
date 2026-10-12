@@ -438,7 +438,7 @@ describe("agent client", () => {
     });
 
     await expect(client.createSendIntent(SEND)).resolves.toBe(
-      "https://agent-intent.ledger-test.com/intents/123?source=agent#review",
+      "https://app.agents.ledger-test.com/intents/123?source=agent#review",
     );
     expect(fetcher).toHaveBeenCalledWith(
       new URL("https://bff.example/agent-intent/v1/intents"),
@@ -469,7 +469,7 @@ describe("agent client", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it("uses the production frontend origin for production intents", async () => {
+  it("rewrites the legacy frontend host to the production frontend origin", async () => {
     const client = createAgentIntentClient({
       bffBaseUrl: "https://bff.example/agent-intent",
       identity: createSoftwareAgentIdentity(SECRET_KEY),
@@ -478,11 +478,13 @@ describe("agent client", () => {
       tokenProvider: staticAccessTokenProvider("agent-token"),
       fetch: vi
         .fn<typeof fetch>()
-        .mockResolvedValue(new Response("https://agent.ledger.com/intents/123", { status: 201 })),
+        .mockResolvedValue(
+          new Response("https://agent-intent.ledger.com/intents/123", { status: 201 }),
+        ),
     });
 
     await expect(client.createSendIntent(SEND)).resolves.toBe(
-      "https://agent-intent.ledger.com/intents/123",
+      "https://app.agents.ledger.com/intents/123",
     );
   });
 });

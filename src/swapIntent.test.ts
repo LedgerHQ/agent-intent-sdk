@@ -233,7 +233,7 @@ describe("agent client swap intents", () => {
       );
 
     await expect(clientFor(fetcher).createSwapIntent(SWAP)).resolves.toBe(
-      "https://agent-intent.ledger-test.com/intents/123?source=agent#review",
+      "https://app.agents.ledger-test.com/intents/123?source=agent#review",
     );
     const [url, init] = fetcher.mock.calls[0]!;
     expect(url).toEqual(new URL("https://bff.example/agent-intent/v1/intents"));
@@ -288,7 +288,7 @@ describe("agent client swap intents", () => {
 
     await expect(
       clientFor(fetcher, staticTokens("stale", "fresh")).createSwapIntent(SWAP),
-    ).resolves.toBe("https://agent-intent.ledger-test.com/intents/ok");
+    ).resolves.toBe("https://app.agents.ledger-test.com/intents/ok");
     expect(fetcher.mock.calls.map(([, init]) => init?.headers)).toEqual([
       expect.objectContaining({ Authorization: "Bearer stale" }),
       expect.objectContaining({ Authorization: "Bearer fresh" }),
