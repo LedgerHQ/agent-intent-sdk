@@ -56,9 +56,10 @@ const deeplink = await client.createSendIntent({
 Amounts accept decimal strings or `bigint` and are serialized as exact JSON
 integers to avoid JavaScript precision loss.
 
-A native SOL send uses `network: "solana"` (or `"solana_devnet"`), canonical
-base58 addresses and an amount in lamports. It has no fee strategy, because the
-service sets the priority fee, and it may carry an on-chain `memo`:
+A Solana send uses `network: "solana"` (or `"solana_devnet"`) and canonical
+base58 addresses. It has no fee strategy, because the service sets the priority
+fee, and it may carry an on-chain `memo`. A native SOL send gives its amount in
+lamports:
 
 ```ts
 const deeplink = await client.createSendIntent({
@@ -71,6 +72,17 @@ const deeplink = await client.createSendIntent({
   memo: "Invoice 42",
 });
 ```
+
+An SPL token send names the token by its mint, with the amount in the token's
+base units:
+
+```ts
+asset: { type: "spl-token", assetReference: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" }, // USDC
+amount: "1000000", // 1 USDC
+```
+
+Token-2022 tokens and an `assetOwner` are refused for now: no client can send
+the former yet, and the service doesn't use the latter on Solana.
 
 ### Swap intents
 
