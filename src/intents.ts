@@ -49,10 +49,11 @@ export type SignedCreateIntent = {
   issuer: string;
   signature: string;
   nonce: string;
-  intent:
-    | (Omit<EvmSendIntent, "amount"> & { amount: string })
-    | (Omit<SolanaSendIntent, "amount"> & { amount: string });
+  intent: WithWireAmount<SendIntent>;
 };
+
+// Distributes over the union, so each send keeps its own fields with a string amount.
+type WithWireAmount<T> = T extends unknown ? Omit<T, "amount"> & { amount: string } : never;
 
 /** EVM networks the Agent Intent service accepts a Swap on. */
 export const SWAP_INTENT_NETWORKS = ["ethereum", "ethereum_sepolia", "arc_testnet"] as const;
@@ -101,37 +102,82 @@ export function isSolanaSendIntent(intent: SendIntent): intent is SolanaSendInte
  * may carry a `0x17` memo.
  */
 export function encodeSendIntentTlv(intent: SendIntent, nonce: string): Uint8Array {
-  const network: unknown = intent.network;
-  if (network !== "ethereum" && network !== "solana" && network !== "solana_devnet") {
-    throw new AgentIntentSdkError(`unsupported network "${String(network)}".`);
+  return envelope(encodeSend(intent).payload, nonce);
+}
+
+export function signCreateIntent(
+  identity: AgentIdentity,
+  intent: SendIntent,
+  nonce = createNonce(),
+): SignedCreateIntent {
+  const encoded = encodeSend(intent);
+  const tlvBytes = envelope(encoded.payload, nonce);
+  return {
+    issuer: identity.publicKey,
+    signature: bytesToHex(identity.signDigest(sha256Digest(tlvBytes), SIGNATURE_DER)),
+    nonce,
+    intent: encoded.intent,
+  };
+}
+
+type EncodedSend = { payload: Uint8Array; intent: SignedCreateIntent["intent"] };
+
+function encodeSend(intent: SendIntent): EncodedSend {
+  switch (intent.network) {
+    case "ethereum":
+      return encodeEvmSend(intent);
+    case "solana":
+    case "solana_devnet":
+      return encodeSolanaSend(intent);
+    default: {
+      const unsupported: never = intent;
+      throw new AgentIntentSdkError(
+        `unsupported network "${String((unsupported as { network: unknown }).network)}".`,
+      );
+    }
   }
-  if (isSolanaSendIntent(intent)) return envelope(encodeSolanaSendPayload(intent), nonce);
+}
+
+function encodeEvmSend(intent: EvmSendIntent): EncodedSend {
   // An EVM send has no memo; refuse one instead of putting it on the wire unsigned.
   if ((intent as { memo?: unknown }).memo !== undefined) {
     throw new AgentIntentSdkError("an Ethereum send has no memo.");
   }
-  const sender = evmAddress(intent.sender, "sender");
-  const recipient = evmAddress(intent.recipient, "recipient");
-  const amount = unsignedMinimal(normalizeAmount(intent.amount));
-  const asset = encodeAsset(intent.asset);
-  const description =
+  const amount = normalizeAmount(intent.amount);
+  const payload = concatBytes(
+    tlv(0x11, evmAddress(intent.sender, "sender")),
+    tlv(0x12, evmAddress(intent.recipient, "recipient")),
+    tlv(0x13, unsignedMinimal(amount)),
+    tlv(0x14, encodeAsset(intent.asset)),
+    tlv(0x15, Uint8Array.of(feeStrategyCode(intent.feeStrategy))),
     intent.description === undefined
       ? new Uint8Array()
-      : tlv(0x16, utf8(assertBoundedText(intent.description, "description")));
-
-  const payload = concatBytes(
-    tlv(0x11, sender),
-    tlv(0x12, recipient),
-    tlv(0x13, amount),
-    tlv(0x14, asset),
-    tlv(0x15, Uint8Array.of(feeStrategyCode(intent.feeStrategy))),
-    description,
+      : tlv(0x16, utf8(assertBoundedText(intent.description, "description"))),
     tlv(0x23, utf8(intent.network)),
   );
-  return envelope(payload, nonce);
+  return {
+    payload,
+    intent: {
+      ...intent,
+      sender: normalizeAddress(intent.sender),
+      recipient: normalizeAddress(intent.recipient),
+      amount: amount.toString(),
+      ...(isTokenAsset(intent.asset)
+        ? {
+            asset: {
+              ...intent.asset,
+              assetReference: normalizeAddress(intent.asset.assetReference),
+              ...(intent.asset.assetOwner === undefined
+                ? {}
+                : { assetOwner: normalizeAddress(intent.asset.assetOwner) }),
+            },
+          }
+        : { asset: { type: "native" as const } }),
+    },
+  };
 }
 
-function encodeSolanaSendPayload(intent: SolanaSendIntent): Uint8Array {
+function encodeSolanaSend(intent: SolanaSendIntent): EncodedSend {
   if ((intent as { feeStrategy?: unknown }).feeStrategy !== undefined) {
     throw new AgentIntentSdkError("a Solana send has no fee strategy.");
   }
@@ -140,7 +186,7 @@ function encodeSolanaSendPayload(intent: SolanaSendIntent): Uint8Array {
   }
   const amount = normalizeAmount(intent.amount);
   if (amount > U64_MAX) throw new AgentIntentSdkError("amount must not exceed u64::MAX lamports.");
-  return concatBytes(
+  const payload = concatBytes(
     tlv(0x11, solanaAddress(intent.sender, "sender")),
     tlv(0x12, solanaAddress(intent.recipient, "recipient")),
     tlv(0x13, unsignedMinimal(amount)),
@@ -153,6 +199,20 @@ function encodeSolanaSendPayload(intent: SolanaSendIntent): Uint8Array {
       : tlv(0x17, utf8(assertBoundedText(intent.memo, "memo"))),
     tlv(0x23, utf8(intent.network)),
   );
+  return {
+    payload,
+    // The addresses decoded to 32 bytes above, so their spelling is already canonical.
+    intent: {
+      type: "send",
+      network: intent.network,
+      sender: intent.sender,
+      recipient: intent.recipient,
+      amount: amount.toString(),
+      asset: { type: "native" },
+      ...(intent.memo === undefined ? {} : { memo: intent.memo }),
+      ...(intent.description === undefined ? {} : { description: intent.description }),
+    },
+  };
 }
 
 function envelope(payload: Uint8Array, nonce: string): Uint8Array {
@@ -165,54 +225,6 @@ function envelope(payload: Uint8Array, nonce: string): Uint8Array {
       tlv(0xda, exactHex(nonce, 16, "nonce")),
     ),
   );
-}
-
-export function signCreateIntent(
-  identity: AgentIdentity,
-  intent: SendIntent,
-  nonce = createNonce(),
-): SignedCreateIntent {
-  const tlvBytes = encodeSendIntentTlv(intent, nonce);
-  return {
-    issuer: identity.publicKey,
-    signature: bytesToHex(identity.signDigest(sha256Digest(tlvBytes), SIGNATURE_DER)),
-    nonce,
-    intent: isSolanaSendIntent(intent) ? solanaWireIntent(intent) : evmWireIntent(intent),
-  };
-}
-
-/** Solana addresses are already canonical (the encoder refused any other spelling). */
-function solanaWireIntent(intent: SolanaSendIntent): SignedCreateIntent["intent"] {
-  return {
-    type: "send",
-    network: intent.network,
-    sender: intent.sender,
-    recipient: intent.recipient,
-    amount: normalizeAmount(intent.amount).toString(),
-    asset: { type: "native" },
-    ...(intent.memo === undefined ? {} : { memo: intent.memo }),
-    ...(intent.description === undefined ? {} : { description: intent.description }),
-  };
-}
-
-function evmWireIntent(intent: EvmSendIntent): SignedCreateIntent["intent"] {
-  return {
-    ...intent,
-    sender: normalizeAddress(intent.sender),
-    recipient: normalizeAddress(intent.recipient),
-    amount: normalizeAmount(intent.amount).toString(),
-    ...(isTokenAsset(intent.asset)
-      ? {
-          asset: {
-            ...intent.asset,
-            assetReference: normalizeAddress(intent.asset.assetReference),
-            ...(intent.asset.assetOwner === undefined
-              ? {}
-              : { assetOwner: normalizeAddress(intent.asset.assetOwner) }),
-          },
-        }
-      : { asset: { type: "native" as const } }),
-  };
 }
 
 export function normalizeSwapIntent(intent: SwapIntent): SwapIntent {
