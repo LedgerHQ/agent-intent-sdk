@@ -106,6 +106,20 @@ console.log(intent.status, intent.updatedAt);
 An unknown id and another agent's intent both fail with `AgentIntentHttpError`
 `status` 404. Amounts are exact decimal strings, as in the listing.
 
+## Cancel an intent
+
+An agent can withdraw an intent it created, as long as the user hasn't acted on it:
+
+```ts
+await client.cancelIntent(intentId);
+```
+
+A `created` or `crafted` intent can be cancelled, and cancelling an already
+cancelled one also succeeds. Any other state, including one the user rejected or
+signed, fails with `AgentIntentHttpError` `status` 400 and no `type`; call
+`getIntent` to see which. Only the user rejects, in Ledger's interface. An intent
+can't be edited: to change one, cancel it and create a new one.
+
 ## User-Agent
 
 Outside browsers, requests send `User-Agent: ledger-agent-intent-sdk/<version> (agentic)`.

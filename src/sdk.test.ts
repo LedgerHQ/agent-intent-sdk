@@ -790,3 +790,106 @@ describe("agent intent lookup", () => {
     );
   });
 });
+
+describe("agent intent cancellation", () => {
+  const INTENT_ID = "0192f7a4-0000-7000-8000-000000000001";
+
+  function cancelClient(...responses: Response[]) {
+    const fetcher = vi.fn<typeof fetch>();
+    for (const response of responses) fetcher.mockResolvedValueOnce(response);
+    const client = createAgentIntentClient({
+      bffBaseUrl: "https://bff.example/agent-intent",
+      identity: createSoftwareAgentIdentity(SECRET_KEY),
+      trustchainId: "trustchain-id",
+      environment: "staging",
+      tokenProvider: {
+        withAccessToken: async (query, retryWhen) => {
+          const result = await query("agent-token");
+          return retryWhen?.(result) ? query("fresh-token") : result;
+        },
+      },
+      fetch: fetcher,
+    });
+    return { client, fetcher };
+  }
+
+  it("cancels one intent by id with the agent's token", async () => {
+    const { client, fetcher } = cancelClient(new Response(null, { status: 204 }));
+
+    await expect(client.cancelIntent(INTENT_ID)).resolves.toBeUndefined();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledWith(
+      new URL(`https://bff.example/agent-intent/v1/intents/${INTENT_ID}/cancel`),
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ Authorization: "Bearer agent-token" }),
+      }),
+    );
+  });
+
+  it("encodes the id so it can't escape the intent's path", async () => {
+    const { client, fetcher } = cancelClient(new Response(null, { status: 204 }));
+
+    await client.cancelIntent("../stats?x=1");
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledWith(
+      new URL("https://bff.example/agent-intent/v1/intents/..%2Fstats%3Fx%3D1/cancel"),
+      expect.anything(),
+    );
+  });
+
+  it.each(["", ".", ".."])("rejects the id %j before calling the BFF", async (intentId) => {
+    const { client, fetcher } = cancelClient(new Response(null, { status: 204 }));
+
+    await expect(client.cancelIntent(intentId)).rejects.toThrow(
+      `Invalid intent id: "${intentId}".`,
+    );
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [400, "Illegal transition from IntentRejected to IntentCancelled"],
+    [404, "Intent not found"],
+  ])("reports a %i from the BFF as an HTTP error without a type", async (status, message) => {
+    const { client } = cancelClient(new Response(JSON.stringify({ message }), { status }));
+
+    const error = await client.cancelIntent(INTENT_ID).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(AgentIntentHttpError);
+    expect(error).toMatchObject({ status, type: undefined, message });
+  });
+
+  it("resolves when the service reports the intent already cancelled", async () => {
+    const { client } = cancelClient(new Response(null, { status: 204 }));
+
+    await expect(client.cancelIntent(INTENT_ID)).resolves.toBeUndefined();
+  });
+
+  it("retries once with a fresh token after a 401", async () => {
+    const { client, fetcher } = cancelClient(
+      new Response(null, { status: 401 }),
+      new Response(null, { status: 204 }),
+    );
+
+    await expect(client.cancelIntent(INTENT_ID)).resolves.toBeUndefined();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher).toHaveBeenLastCalledWith(
+      expect.any(URL),
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer fresh-token" }),
+      }),
+    );
+  });
+
+  it("gives up when the retry also gets a 401", async () => {
+    const { client, fetcher } = cancelClient(
+      new Response(null, { status: 401 }),
+      new Response(null, { status: 401 }),
+    );
+
+    const error = await client.cancelIntent(INTENT_ID).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(AgentIntentHttpError);
+    expect(error).toMatchObject({ status: 401 });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+});
