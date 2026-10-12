@@ -53,26 +53,26 @@ checksum = "sha256:f2879eb810e25993a0578e5d878930266fd2eafcffe9f2839b3d8db354d48
 url = "https://nodejs.org/dist/v24.14.0/node-v24.14.0-darwin-x64.tar.gz"
 
 [[tools.pnpm]]
-version = "11.13.1"
+version = "11.28.5"
 backend = "aqua:pnpm/pnpm"
-specifiers = ["11.13.1"]
+specifiers = ["11.28.5"]
 
 [tools.pnpm."platforms.linux-arm64"]
-checksum = "sha256:b52db99d215ed7dc9563aed815953c62a6c1ffd7cd75803d3a07ad7e4f246aed"
-url = "https://github.com/pnpm/pnpm/releases/download/v11.13.1/pnpm-linux-arm64.tar.gz"
-url_api = "https://api.github.com/repos/pnpm/pnpm/releases/assets/478563983"
+checksum = "sha256:8118c0c80d6c4cceedbf48b44a620988c1f979f9de06e1a3a0347aa2554e88eb"
+url = "https://github.com/pnpm/pnpm/releases/download/v11.28.5/pnpm-linux-arm64.tar.gz"
+url_api = "https://api.github.com/repos/pnpm/pnpm/releases/assets/613990820"
 provenance = "github-attestations"
 
 [tools.pnpm."platforms.linux-x64"]
-checksum = "sha256:bd6d4b0e14536207ad76bc838f5980cecd968da15f69aae0b207380cca3f2e98"
-url = "https://github.com/pnpm/pnpm/releases/download/v11.13.1/pnpm-linux-x64.tar.gz"
-url_api = "https://api.github.com/repos/pnpm/pnpm/releases/assets/478563986"
+checksum = "sha256:8cfc53d32a38d3c5e89777a5c097d910b4a79e660e1988045d05cd81449e42d9"
+url = "https://github.com/pnpm/pnpm/releases/download/v11.28.5/pnpm-linux-x64.tar.gz"
+url_api = "https://api.github.com/repos/pnpm/pnpm/releases/assets/613990822"
 provenance = "github-attestations"
 
 [tools.pnpm."platforms.macos-arm64"]
-checksum = "sha256:765c2bf04e8129cb58c0f946e324262e418370b35a203b50b1f06a0567ef8bc1"
-url = "https://github.com/pnpm/pnpm/releases/download/v11.13.1/pnpm-darwin-arm64.tar.gz"
-url_api = "https://api.github.com/repos/pnpm/pnpm/releases/assets/478563984"
+checksum = "sha256:809b67a5e31e4fab0342c5bf069072dd597f9fec6714b3375cf15b25125f213e"
+url = "https://github.com/pnpm/pnpm/releases/download/v11.28.5/pnpm-darwin-arm64.tar.gz"
+url_api = "https://api.github.com/repos/pnpm/pnpm/releases/assets/613990816"
 provenance = "github-attestations"
 
 [[tools.zizmor]]
