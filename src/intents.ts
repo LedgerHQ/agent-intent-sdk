@@ -106,7 +106,7 @@ export function encodeSendIntentTlv(intent: SendIntent, nonce: string): Uint8Arr
     throw new AgentIntentSdkError(`unsupported network "${String(network)}".`);
   }
   if (isSolanaSendIntent(intent)) return envelope(encodeSolanaSendPayload(intent), nonce);
-  // S2: an EVM send has no memo; refuse one instead of putting it on the wire unsigned.
+  // An EVM send has no memo; refuse one instead of putting it on the wire unsigned.
   if ((intent as { memo?: unknown }).memo !== undefined) {
     throw new AgentIntentSdkError("an Ethereum send has no memo.");
   }
