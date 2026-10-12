@@ -7,26 +7,19 @@ type NodeProcess = {
   };
 };
 
-/** The Node process (also Bun's), or `undefined` in a browser. */
+/** The Node process (also Bun's, Deno 2's and Workers' with `nodejs_compat`), or `undefined` in a browser. */
 export function nodeProcess(): NodeProcess | undefined {
   const candidate = (globalThis as { process?: NodeProcess }).process;
   return candidate?.versions?.node ? candidate : undefined;
 }
 
-/**
- * `ledger-agent-intent-sdk/<version> (agentic)`, so agent traffic to the BFF and Keycloak can be
- * monitored on its own in Cloudflare and Datadog. Only agents send it: in a browser the request
- * keeps the browser's own User-Agent, and setting one there would trigger a CORS preflight.
- */
+/** Undefined in browsers: they send their own UA, and setting one would force a CORS preflight. */
 export function agentUserAgent(): string | undefined {
   const node = nodeProcess();
   return node ? `ledger-agent-intent-sdk/${sdkVersion(node)} (agentic)` : undefined;
 }
 
-/**
- * Wraps the fetch the SDK sends its own requests with, so each one carries the agent User-Agent
- * unless its headers already set one. In a browser it returns `fetcher` unchanged.
- */
+/** Adds the agent User-Agent unless the request already sets one. */
 export function withAgentUserAgent(fetcher: typeof globalThis.fetch): typeof globalThis.fetch {
   const userAgent = agentUserAgent();
   if (!userAgent) return fetcher;
@@ -46,12 +39,10 @@ function withUserAgentHeader(headers: HeadersInit | undefined, userAgent: string
     : { ...named, "User-Agent": userAgent };
 }
 
-// `scripts/stamp-version.mjs` writes the package version here in `dist`, so it survives bundling
-// and single-file executables such as a compiled wallet-cli.
+// Replaced in dist by scripts/stamp-version.mjs so the version survives bundling.
 const BUILD_VERSION: string = "__SDK_VERSION__";
 
-// From source (tests, local development), read the package's own manifest instead.
-// `getBuiltinModule` keeps `node:module` out of the import graph that browser bundles follow.
+// `getBuiltinModule` keeps `node:module` out of browser bundles' import graph.
 function sdkVersion(node: NodeProcess): string {
   if (!BUILD_VERSION.startsWith("__")) return BUILD_VERSION;
   try {

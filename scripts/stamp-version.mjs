@@ -1,8 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-// Writes the package version into dist, so the agent User-Agent carries it even once the SDK is
-// bundled or compiled into a single executable without its package.json.
+// Inlines the package version into dist/userAgent.js (see BUILD_VERSION).
 const root = path.resolve(import.meta.dirname, "..");
 const { version } = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
 const target = path.join(root, "dist", "userAgent.js");

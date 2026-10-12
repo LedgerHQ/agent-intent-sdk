@@ -106,6 +106,11 @@ console.log(intent.status, intent.updatedAt);
 An unknown id and another agent's intent both fail with `AgentIntentHttpError`
 `status` 404. Amounts are exact decimal strings, as in the listing.
 
+## User-Agent
+
+Outside browsers, requests send `User-Agent: ledger-agent-intent-sdk/<version> (agentic)`.
+A custom `tokenProvider` sends its own authentication requests, so it must set that header itself.
+
 ## Enrollment fingerprint
 
 Display the same fingerprint that the Ledger device shows:
