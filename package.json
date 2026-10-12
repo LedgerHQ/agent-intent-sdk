@@ -26,7 +26,7 @@
     "access": "restricted"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/stamp-version.mjs",
     "clean:build": "rm -rf dist coverage",
     "changelog": "changeset add",
     "format": "oxfmt .",

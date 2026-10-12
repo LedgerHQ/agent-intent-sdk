@@ -21,6 +21,7 @@ import {
 } from "./enrollment.ts";
 import { createSoftwareAgentIdentity, sha256Digest } from "./identity.ts";
 import type { ListAgentIntentsQuery } from "./intentPage.ts";
+import { agentUserAgent } from "./userAgent.ts";
 import {
   encodeSendIntentTlv,
   serializeCreateIntent,
@@ -280,6 +281,9 @@ describe("agent authentication contract", () => {
     expect(String(fetcher.mock.calls[0]?.[0])).toContain(
       "/realms/agent-intent-customers/protocol/openid-connect/auth",
     );
+    expect(
+      fetcher.mock.calls.map(([, init]) => new Headers(init?.headers).get("user-agent")),
+    ).toEqual(Array(4).fill(agentUserAgent()));
   });
 
   it("retains Keycloak cookies across Node redirect chains", async () => {
@@ -440,7 +444,10 @@ describe("agent client", () => {
       new URL("https://bff.example/agent-intent/v1/intents"),
       expect.objectContaining({
         method: "POST",
-        headers: expect.objectContaining({ Authorization: "Bearer agent-token" }),
+        headers: expect.objectContaining({
+          Authorization: "Bearer agent-token",
+          "User-Agent": agentUserAgent(),
+        }),
       }),
     );
   });

@@ -50,6 +50,14 @@ try {
     ),
   );
   if (manifest.private === true) throw new Error("Packed package must not be private.");
+  const userAgentModule = await readFile(
+    path.join(consumerDirectory, "node_modules/@ledgerhq/agent-intent-sdk/dist/userAgent.js"),
+    "utf8",
+  );
+  const stamped = `const BUILD_VERSION = ${JSON.stringify(manifest.version)};`;
+  if (!userAgentModule.split("\n").includes(stamped)) {
+    throw new Error("Packed userAgent.js does not carry the package version.");
+  }
 
   console.log("Package contents and clean-consumer import verified.");
 } finally {
