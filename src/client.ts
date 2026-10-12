@@ -28,8 +28,8 @@ import {
 } from "./intents.ts";
 
 export const AGENT_INTENT_FRONTEND_URLS: Record<AgentIntentEnvironment, string> = {
-  staging: "https://agent-intent.ledger-test.com/",
-  production: "https://agent-intent.ledger.com/",
+  staging: "https://app.agents.ledger-test.com/",
+  production: "https://app.agents.ledger.com/",
 };
 
 export class AgentIntentHttpError extends AgentIntentSdkError {

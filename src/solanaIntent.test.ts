@@ -234,7 +234,7 @@ describe("Solana send signing contract", () => {
     });
 
     await expect(client.createSendIntent({ ...SOLANA_SEND, network: "solana" })).resolves.toBe(
-      "https://agent-intent.ledger.com/intents/123",
+      "https://app.agents.ledger.com/intents/123",
     );
     expect(fetcher).toHaveBeenCalledTimes(1);
     const body = JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body));
