@@ -44,6 +44,29 @@ describe("agent User-Agent", () => {
     expect(new Headers(fetcher.mock.calls[0]?.[1]?.headers).get("user-agent")).toBe("host/1.0");
   });
 
+  it("keeps a Request's own headers when no init is given", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(null));
+    const request = new Request("https://bff.example", {
+      headers: { Authorization: "Bearer agent-token" },
+    });
+
+    await withAgentUserAgent(fetcher)(request);
+
+    const headers = new Headers(fetcher.mock.calls[0]?.[1]?.headers);
+    expect(fetcher.mock.calls[0]?.[0]).toBe(request);
+    expect(headers.get("authorization")).toBe("Bearer agent-token");
+    expect(headers.get("user-agent")).toBe(USER_AGENT);
+  });
+
+  it("keeps a User-Agent a Request already sets", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(null));
+    const request = new Request("https://bff.example", { headers: { "User-Agent": "host/1.0" } });
+
+    await withAgentUserAgent(fetcher)(request);
+
+    expect(new Headers(fetcher.mock.calls[0]?.[1]?.headers).get("user-agent")).toBe("host/1.0");
+  });
+
   it("leaves browser requests to the browser's own User-Agent", () => {
     vi.stubGlobal("process", undefined);
     const fetcher = vi.fn<typeof fetch>();
