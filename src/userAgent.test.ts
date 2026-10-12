@@ -58,6 +58,23 @@ describe("agent User-Agent", () => {
     expect(headers.get("user-agent")).toBe(USER_AGENT);
   });
 
+  it.each([
+    ["an init without headers", { method: "POST" }, "Bearer agent-token"],
+    // fetch lets init.headers replace a Request's own, and the wrapper keeps that.
+    ["init headers", { headers: { Accept: "application/json" } }, null],
+  ])("with a Request and %s, sends the expected headers", async (_, init, authorization) => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(null));
+    const request = new Request("https://bff.example", {
+      headers: { Authorization: "Bearer agent-token" },
+    });
+
+    await withAgentUserAgent(fetcher)(request, init);
+
+    const headers = new Headers(fetcher.mock.calls[0]?.[1]?.headers);
+    expect(headers.get("authorization")).toBe(authorization);
+    expect(headers.get("user-agent")).toBe(USER_AGENT);
+  });
+
   it("keeps a User-Agent a Request already sets", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(null));
     const request = new Request("https://bff.example", { headers: { "User-Agent": "host/1.0" } });
