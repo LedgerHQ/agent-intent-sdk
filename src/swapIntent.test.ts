@@ -105,8 +105,8 @@ describe("swap intent signing contract", () => {
   });
 
   it("normalizes text to NFC, like the backend", () => {
-    expect(hex(encodeSwapIntentTlv({ ...SWAP, description: "café" }, NONCE))).toBe(
-      hex(encodeSwapIntentTlv({ ...SWAP, description: "café" }, NONCE)),
+    expect(hex(encodeSwapIntentTlv({ ...SWAP, description: "cafe\u0301" }, NONCE))).toBe(
+      hex(encodeSwapIntentTlv({ ...SWAP, description: "caf\u00e9" }, NONCE)),
     );
   });
 
