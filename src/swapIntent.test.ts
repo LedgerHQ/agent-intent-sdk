@@ -186,6 +186,7 @@ describe("normalizeSwapIntent", () => {
   });
 
   it.each([
+    ["another intent type", { type: "send" as never }],
     ["a short address", { sender: "0x" + "11".repeat(19) }],
     ["a non-hex address", { sender: "0xnot-an-address" }],
     ["a network without swaps", { network: "solana" as never }],

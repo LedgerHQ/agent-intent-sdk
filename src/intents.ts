@@ -132,6 +132,9 @@ export function signCreateIntent(
 }
 
 export function normalizeSwapIntent(intent: SwapIntent): SwapIntent {
+  if (intent.type !== "swap") {
+    throw new AgentIntentSdkError(`expected a swap intent, got type "${String(intent.type)}".`);
+  }
   if (!(SWAP_INTENT_NETWORKS as readonly string[]).includes(intent.network)) {
     throw new AgentIntentSdkError(
       `unsupported swap network "${String(intent.network)}"; use one of ${SWAP_INTENT_NETWORKS.join(", ")}.`,
