@@ -146,6 +146,14 @@ describe("Solana send signing contract", () => {
     expect(() => encodeSendIntentTlv(intent, NONCE)).toThrow("sender must be base58.");
   });
 
+  it("decodes an address of leading 1s to the all-zero key", () => {
+    const encoded = bytesToHex(
+      encodeSendIntentTlv({ ...SOLANA_SEND, sender: "1".repeat(32) }, NONCE),
+    );
+
+    expect(encoded).toContain(`1120${"00".repeat(32)}1220${"22".repeat(32)}`);
+  });
+
   it("accepts a memo of exactly 280 UTF-16 code units and an undefined fee strategy", () => {
     const intent = {
       ...SOLANA_SEND,
