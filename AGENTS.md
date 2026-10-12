@@ -13,7 +13,7 @@ frontend workflows, mocks, or the Agent Intent CLI to this package.
 ## Toolchain
 
 - Node.js 24
-- pnpm 11
+- pnpm 12
 - TypeScript 7
 - Vitest 5
 - oxlint and oxfmt
