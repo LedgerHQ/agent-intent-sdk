@@ -178,10 +178,12 @@ describe("normalizeSwapIntent", () => {
     expect(precise.fromAmount).toBe("12.000000000000000001");
   });
 
-  it("counts a description in characters, not UTF-16 units", () => {
-    expect(() => normalizeSwapIntent({ ...SWAP, description: "🔁".repeat(280) })).not.toThrow();
-    expect(() => normalizeSwapIntent({ ...SWAP, description: "🔁".repeat(281) })).toThrow(
-      AgentIntentSdkError,
+  it("counts a description in UTF-16 code units, like the service", () => {
+    expect(() =>
+      normalizeSwapIntent({ ...SWAP, description: "\u{1F501}".repeat(140) }),
+    ).not.toThrow();
+    expect(() => normalizeSwapIntent({ ...SWAP, description: "\u{1F501}".repeat(141) })).toThrow(
+      "description must contain between 1 and 280 UTF-16 code units.",
     );
   });
 

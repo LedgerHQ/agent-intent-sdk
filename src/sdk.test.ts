@@ -464,7 +464,7 @@ describe("agent client", () => {
     });
 
     await expect(client.createSendIntent({ ...SEND, amount: "-1" })).rejects.toThrow(
-      "amount must be a non-negative decimal integer.",
+      "amount must be a positive decimal integer.",
     );
     expect(fetcher).not.toHaveBeenCalled();
   });
