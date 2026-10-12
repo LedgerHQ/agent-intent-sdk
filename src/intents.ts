@@ -80,6 +80,8 @@ export type SignedSwapIntent = {
 };
 
 const textEncoder = new TextEncoder();
+const U64_MAX = 2n ** 64n - 1n;
+const SOLANA_ADDRESS_MAX_LENGTH = 44;
 
 export function createNonce(
   randomBytes: (length: number) => Uint8Array = defaultRandomBytes,
@@ -379,8 +381,6 @@ function solanaAddress(value: string, label: string): Uint8Array {
   return decoded;
 }
 
-const SOLANA_ADDRESS_MAX_LENGTH = 44;
-
 function evmAddress(value: string, label: string): Uint8Array {
   return exactHex(value, 20, label);
 }
@@ -427,8 +427,6 @@ function identifier(value: string, label: string): string {
   }
   return value;
 }
-
-const U64_MAX = 2n ** 64n - 1n;
 
 function utf8(value: string): Uint8Array {
   return textEncoder.encode(value.normalize("NFC"));
