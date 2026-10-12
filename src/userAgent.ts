@@ -23,8 +23,15 @@ export function agentUserAgent(): string | undefined {
 export function withAgentUserAgent(fetcher: typeof globalThis.fetch): typeof globalThis.fetch {
   const userAgent = agentUserAgent();
   if (!userAgent) return fetcher;
+  // `init.headers` replaces a Request's own headers, so start from them when init has none.
   return (input, init) =>
-    fetcher(input, { ...init, headers: withUserAgentHeader(init?.headers, userAgent) });
+    fetcher(input, {
+      ...init,
+      headers: withUserAgentHeader(
+        init?.headers ?? (input instanceof Request ? input.headers : undefined),
+        userAgent,
+      ),
+    });
 }
 
 function withUserAgentHeader(headers: HeadersInit | undefined, userAgent: string): HeadersInit {
