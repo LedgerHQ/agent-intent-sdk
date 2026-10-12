@@ -20,7 +20,7 @@ import {
   validateAgentEnrollment,
 } from "./enrollment.ts";
 import { createSoftwareAgentIdentity, sha256Digest } from "./identity.ts";
-import type { ListAgentIntentsQuery } from "./intentPage.ts";
+import { isSendOperation, isSwapOperation, type ListAgentIntentsQuery } from "./intentPage.ts";
 import { agentUserAgent } from "./userAgent.ts";
 import {
   encodeSendIntentTlv,
@@ -580,26 +580,97 @@ describe("agent intent listing", () => {
     });
   });
 
+  const SOLANA_INTENT = {
+    type: "send",
+    network: "solana",
+    sender: "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+    recipient: "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+    amount: "1000000",
+    asset: { type: "spl-token", assetReference: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" },
+    memo: "Invoice 42",
+  };
+  const SWAP_INTENT = {
+    type: "swap",
+    network: "ethereum",
+    sender: "0x1111111111111111111111111111111111111111",
+    fromAsset: "ethereum",
+    toAsset: "ethereum/erc20/usd__coin",
+    fromAmount: "0.5",
+    toAmount: "1250",
+    provider: "oneinch",
+    description: "Rebalance to USDC",
+  };
+
+  it("types Solana sends and swaps, and narrows them with the guards", async () => {
+    const records = [
+      { ...RECORD, intent: SOLANA_INTENT },
+      { ...RECORD, id: "0192f7a4-0000-7000-8000-000000000002", intent: SWAP_INTENT },
+    ];
+    const { client } = listingClient(new Response(JSON.stringify(records), { status: 200 }));
+
+    const [send, swap] = (await client.listIntents()).intents.map((record) => record.intent);
+    expect([send, swap]).toEqual([SOLANA_INTENT, SWAP_INTENT]);
+    expect([isSendOperation(send!), isSwapOperation(send!)]).toEqual([true, false]);
+    expect([isSendOperation(swap!), isSwapOperation(swap!)]).toEqual([false, true]);
+  });
+
   it.each([
-    ["amount sent as a JSON number", { amount: 1000000000000000 }],
-    ["fromAmount sent as a JSON number", { fromAmount: 1 }],
-    ["toAmount sent as a JSON number", { toAmount: 42 }],
-    ["network", { network: 7 }],
-    ["sender", { sender: false }],
-    ["recipient", { recipient: {} }],
-    ["feeStrategy", { feeStrategy: 1 }],
-    ["description", { description: 123 }],
-    ["asset", { asset: "native" }],
-    ["asset type", { asset: { type: 3 } }],
-    ["asset reference", { asset: { type: "erc20", assetReference: 1 } }],
-    ["asset owner", { asset: { type: "erc20", assetOwner: [] } }],
-  ])("rejects an intent whose %s has the wrong type", async (_field, override) => {
-    const record = { ...RECORD, intent: { ...RECORD.intent, ...override } };
+    ["amount sent as a JSON number", RECORD.intent, { amount: 1000000000000000 }],
+    ["network", RECORD.intent, { network: 7 }],
+    ["sender", RECORD.intent, { sender: false }],
+    ["recipient", RECORD.intent, { recipient: {} }],
+    ["feeStrategy", RECORD.intent, { feeStrategy: 1 }],
+    ["description", RECORD.intent, { description: 123 }],
+    ["asset", RECORD.intent, { asset: "native" }],
+    ["asset type", RECORD.intent, { asset: { type: 3 } }],
+    ["asset reference", RECORD.intent, { asset: { type: "erc20", assetReference: 1 } }],
+    ["asset owner", RECORD.intent, { asset: { type: "erc20", assetOwner: [] } }],
+    ["memo", SOLANA_INTENT, { memo: 42 }],
+    ["fromAsset", SWAP_INTENT, { fromAsset: null }],
+    ["toAsset", SWAP_INTENT, { toAsset: 1 }],
+    ["fromAmount sent as a JSON number", SWAP_INTENT, { fromAmount: 1 }],
+    ["toAmount sent as a JSON number", SWAP_INTENT, { toAmount: 42 }],
+    ["provider", SWAP_INTENT, { provider: ["oneinch"] }],
+    ["swap description", SWAP_INTENT, { description: false }],
+  ])("rejects an intent whose %s has the wrong type", async (_field, intent, override) => {
+    const record = { ...RECORD, intent: { ...intent, ...override } };
     const { client } = listingClient(new Response(JSON.stringify([record]), { status: 200 }));
 
     await expect(client.listIntents()).rejects.toThrow(
       "BFF returned an intent listing with an unexpected shape.",
     );
+  });
+
+  it.each([
+    ["send", RECORD.intent, ["network", "sender", "recipient", "amount", "asset"]],
+    [
+      "swap",
+      SWAP_INTENT,
+      ["network", "sender", "fromAsset", "toAsset", "fromAmount", "toAmount", "provider"],
+    ],
+  ])("rejects a %s without one of its required fields", async (_type, intent, fields) => {
+    for (const field of fields) {
+      const { [field]: _omitted, ...rest } = intent as Record<string, unknown>;
+      const { client } = listingClient(
+        new Response(JSON.stringify([{ ...RECORD, intent: rest }]), { status: 200 }),
+      );
+
+      await expect(client.listIntents(), field).rejects.toThrow(
+        "BFF returned an intent listing with an unexpected shape.",
+      );
+    }
+  });
+
+  it("passes an intent type it doesn't know through as it is", async () => {
+    const record = { ...RECORD, intent: { type: "stake", validator: "v1", amount: 5 } };
+    const { client } = listingClient(new Response(JSON.stringify([record]), { status: 200 }));
+
+    const { intents } = await client.listIntents();
+    expect(intents).toEqual([record]);
+    expect([isSendOperation(intents[0]!.intent), isSwapOperation(intents[0]!.intent)]).toEqual([
+      false,
+      false,
+    ]);
   });
 
   it("keeps fields a newer BFF adds to an intent", async () => {
@@ -697,8 +768,11 @@ describe("agent intent lookup", () => {
     intent: {
       type: "send",
       network: "ethereum",
+      sender: "0x1111111111111111111111111111111111111111",
+      recipient: "0x2222222222222222222222222222222222222222",
       amount: "1000000000000000",
       asset: { type: "native" },
+      feeStrategy: "medium",
     },
     createdAt: "2026-10-07T10:00:00Z",
     updatedAt: "2026-10-07T10:05:00Z",
