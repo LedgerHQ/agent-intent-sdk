@@ -107,6 +107,8 @@ const deeplink = await client.createSwapIntent({
 ## List the agent's intents
 
 ```ts
+import { isSendOperation, isSwapOperation } from "@ledgerhq/agent-intent-sdk";
+
 let page = await client.listIntents({ status: ["signed", "broadcast"], pageSize: 10 });
 while (true) {
   for (const { id, status, intent } of page.intents) {

@@ -661,6 +661,11 @@ describe("agent intent listing", () => {
     }
   });
 
+  it("doesn't narrow a hand-built send or swap that lacks its fields", () => {
+    expect(isSendOperation({ type: "send" })).toBe(false);
+    expect(isSwapOperation({ type: "swap", fromAmount: 1 })).toBe(false);
+  });
+
   it("passes an intent type it doesn't know through as it is", async () => {
     const record = { ...RECORD, intent: { type: "stake", validator: "v1", amount: 5 } };
     const { client } = listingClient(new Response(JSON.stringify([record]), { status: 200 }));

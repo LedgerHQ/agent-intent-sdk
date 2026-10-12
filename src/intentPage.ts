@@ -28,7 +28,10 @@ export function isAgentIntentPageSize(value: unknown): value is AgentIntentPageS
 
 export type AgentIntentAsset = { type: string; assetReference?: string; assetOwner?: string };
 
-/** An EVM send has a `feeStrategy`, a Solana send may have a `memo`. Amounts are exact decimal strings. */
+/**
+ * An EVM send has a `feeStrategy`, a Solana send may have a `memo`; tell them apart by `network`.
+ * Amounts are exact decimal strings.
+ */
 export type AgentIntentSendOperation = {
   type: "send";
   network: string;
@@ -66,13 +69,13 @@ export type AgentIntentOperation =
 export function isSendOperation(
   operation: AgentIntentOperation,
 ): operation is AgentIntentSendOperation {
-  return operation.type === "send";
+  return operation.type === "send" && hasKnownFields(operation);
 }
 
 export function isSwapOperation(
   operation: AgentIntentOperation,
 ): operation is AgentIntentSwapOperation {
-  return operation.type === "swap";
+  return operation.type === "swap" && hasKnownFields(operation);
 }
 
 /** `status` stays open so that a state a newer BFF adds never breaks parsing. */
@@ -157,8 +160,12 @@ function isAgentIntentRecord(value: unknown): value is AgentIntentRecord {
 function isOperation(value: unknown): value is AgentIntentOperation {
   if (typeof value !== "object" || value === null) return false;
   const operation = value as Record<string, unknown>;
-  if (typeof operation.type !== "string") return false;
-  const fields = OPERATION_FIELDS.get(operation.type);
+  return typeof operation.type === "string" && hasKnownFields(operation);
+}
+
+/** True for a type this SDK doesn't know; for a send or swap, checks its fields. */
+function hasKnownFields(operation: Record<string, unknown>): boolean {
+  const fields = OPERATION_FIELDS.get(String(operation.type));
   if (!fields) return true;
   return (
     fields.required.every((field) => typeof operation[field] === "string") &&
