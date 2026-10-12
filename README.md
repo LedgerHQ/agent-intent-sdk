@@ -113,8 +113,8 @@ await client.cancelIntent(intentId);
 ```
 
 Only a `created` or `crafted` intent can be cancelled, and a repeat succeeds;
-any other state fails with `AgentIntentHttpError` `status` 400. A signed intent
-can't be edited: cancel it and create a new one.
+any other state fails with `AgentIntentHttpError` `status` 400. An intent can't
+be edited: to change one, cancel it before the user signs and create a new one.
 
 ## User-Agent
 
