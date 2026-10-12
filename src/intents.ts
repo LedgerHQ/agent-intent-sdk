@@ -1,4 +1,4 @@
-import { base58Decode } from "./base58.ts";
+import bs58 from "bs58";
 import { AgentIntentSdkError, bytesToHex, concatBytes, hexToBytes } from "./bytes.ts";
 import { SIGNATURE_DER, sha256Digest, type AgentIdentity } from "./identity.ts";
 
@@ -365,11 +365,17 @@ function normalizeAddress(value: string): string {
  * 32 bytes is the canonical spelling the service re-encodes and stores.
  */
 function solanaAddress(value: string, label: string): Uint8Array {
-  // 32 bytes take at most 44 base58 digits; refusing longer text first keeps the
-  // quadratic decoder from running on arbitrarily long input.
-  const decoded =
-    value.length <= SOLANA_ADDRESS_MAX_LENGTH ? base58Decode(value, label) : undefined;
-  if (decoded?.length !== 32) {
+  // 32 bytes take at most 44 base58 digits; longer text never reaches the slow decoder.
+  if (value.length > SOLANA_ADDRESS_MAX_LENGTH) {
+    throw new AgentIntentSdkError(`${label} must be a 32-byte base58 address.`);
+  }
+  let decoded: Uint8Array;
+  try {
+    decoded = bs58.decode(value);
+  } catch {
+    throw new AgentIntentSdkError(`${label} must be base58.`);
+  }
+  if (decoded.length !== 32) {
     throw new AgentIntentSdkError(`${label} must be a 32-byte base58 address.`);
   }
   return decoded;

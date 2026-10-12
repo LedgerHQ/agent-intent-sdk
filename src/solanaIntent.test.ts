@@ -1,6 +1,6 @@
 import { secp256k1 } from "@noble/curves/secp256k1.js";
+import bs58 from "bs58";
 import { describe, expect, it, vi } from "vitest";
-import { base58Decode, base58Encode } from "./base58.ts";
 import { bytesToHex, hexToBytes } from "./bytes.ts";
 import { createAgentIntentClient, staticAccessTokenProvider } from "./client.ts";
 import { createSoftwareAgentIdentity, sha256Digest } from "./identity.ts";
@@ -25,26 +25,6 @@ const SOLANA_SEND: SolanaSendIntent = {
   amount: 1_000_000_000n,
   asset: { type: "native" },
 };
-
-describe("base58", () => {
-  it("decodes the ADR-0002 keys to their 32 bytes and back", () => {
-    expect(bytesToHex(base58Decode(SENDER))).toBe("11".repeat(32));
-    expect(bytesToHex(base58Decode(RECIPIENT))).toBe("22".repeat(32));
-    expect(base58Encode(hexToBytes("22".repeat(32)))).toBe(RECIPIENT);
-  });
-
-  it("keeps leading zero bytes as leading 1s", () => {
-    expect(base58Encode(Uint8Array.of(0, 0, 1))).toBe("112");
-    expect(base58Decode("112")).toEqual(Uint8Array.of(0, 0, 1));
-    expect(base58Encode(new Uint8Array(32))).toBe("1".repeat(32));
-  });
-
-  it.each(["0", "O", "I", "l", "+"])("rejects the non-base58 character %j", (character) => {
-    expect(() => base58Decode(`${SENDER.slice(1)}${character}`, "sender")).toThrow(
-      "sender must be base58.",
-    );
-  });
-});
 
 describe("Solana send signing contract", () => {
   // agent-intent-service ADR-0002, "Pinned vectors": 1 SOL on devnet from 0x11 × 32 to 0x22 × 32.
@@ -119,7 +99,7 @@ describe("Solana send signing contract", () => {
   it.each([
     [
       "a 31-byte address",
-      { recipient: base58Encode(new Uint8Array(31).fill(0x22)) },
+      { recipient: bs58.encode(new Uint8Array(31).fill(0x22)) },
       "recipient must be a 32-byte base58 address.",
     ],
     ["a non-base58 address", { sender: `${SENDER.slice(0, -1)}0` }, "sender must be base58."],
@@ -158,6 +138,12 @@ describe("Solana send signing contract", () => {
     const intent = { ...SOLANA_SEND, ...fields } as unknown as SendIntent;
 
     expect(() => encodeSendIntentTlv(intent, NONCE)).toThrow(message);
+  });
+
+  it.each(["O", "I", "l", "+"])("refuses the non-base58 character %j", (character) => {
+    const intent = { ...SOLANA_SEND, sender: `${SENDER.slice(1)}${character}` };
+
+    expect(() => encodeSendIntentTlv(intent, NONCE)).toThrow("sender must be base58.");
   });
 
   it("accepts a memo of exactly 280 UTF-16 code units and an undefined fee strategy", () => {
