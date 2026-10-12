@@ -72,6 +72,13 @@ const deeplink = await client.createSendIntent({
 });
 ```
 
+An SPL token send names the token by its mint, with the amount in the token's base units:
+
+```ts
+asset: { type: "spl-token", assetReference: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" }, // USDC
+amount: "1000000", // 1 USDC
+```
+
 ### Swap intents
 
 ```ts

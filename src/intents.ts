@@ -27,10 +27,17 @@ export type EvmSendIntent = {
 
 export type SolanaNetwork = "solana" | "solana_devnet";
 
+/** An SPL token, named by its mint address in canonical base58. */
+export type SplTokenAsset = {
+  type: "spl-token";
+  assetReference: string;
+};
+
 /**
- * A native SOL send. Addresses are canonical base58, `amount` is in lamports
- * (at most `u64::MAX`), and there is no fee strategy: the service sets the
- * priority fee itself. `memo` goes on chain with the transfer.
+ * A SOL or SPL token send. Addresses are canonical base58, `amount` is in
+ * lamports or the token's base units (at most `u64::MAX`), and there is no fee
+ * strategy: the service sets the priority fee itself. `memo` goes on chain
+ * with the transfer.
  */
 export type SolanaSendIntent = {
   type: "send";
@@ -38,7 +45,7 @@ export type SolanaSendIntent = {
   sender: string;
   recipient: string;
   amount: bigint | string;
-  asset: NativeAsset;
+  asset: NativeAsset | SplTokenAsset;
   memo?: string;
   description?: string;
 };
@@ -181,16 +188,13 @@ function encodeSolanaSend(intent: SolanaSendIntent): EncodedSend {
   if ((intent as { feeStrategy?: unknown }).feeStrategy !== undefined) {
     throw new AgentIntentSdkError("a Solana send has no fee strategy.");
   }
-  if (isTokenAsset(intent.asset)) {
-    throw new AgentIntentSdkError("only native SOL sends are supported on Solana.");
-  }
   const amount = normalizeAmount(intent.amount);
-  if (amount > U64_MAX) throw new AgentIntentSdkError("amount must not exceed u64::MAX lamports.");
+  if (amount > U64_MAX) throw new AgentIntentSdkError("amount must not exceed u64::MAX.");
   const payload = concatBytes(
     tlv(0x11, solanaAddress(intent.sender, "sender")),
     tlv(0x12, solanaAddress(intent.recipient, "recipient")),
     tlv(0x13, unsignedMinimal(amount)),
-    tlv(0x14, encodeAsset(intent.asset)),
+    tlv(0x14, encodeSolanaAsset(intent.asset)),
     optionalText(0x16, intent.description, "description"),
     optionalText(0x17, intent.memo, "memo"),
     tlv(0x23, utf8(intent.network)),
@@ -204,7 +208,9 @@ function encodeSolanaSend(intent: SolanaSendIntent): EncodedSend {
       sender: intent.sender,
       recipient: intent.recipient,
       amount: amount.toString(),
-      asset: { type: "native" },
+      asset: isTokenAsset(intent.asset)
+        ? { type: "spl-token", assetReference: intent.asset.assetReference }
+        : { type: "native" },
       ...(intent.memo === undefined ? {} : { memo: intent.memo }),
       ...(intent.description === undefined ? {} : { description: intent.description }),
     },
@@ -304,6 +310,23 @@ function encodeAsset(asset: Asset): Uint8Array {
     ...(asset.assetOwner === undefined
       ? []
       : [tlv(0x22, evmAddress(asset.assetOwner, "assetOwner"))]),
+  );
+}
+
+// The service also takes "spl-token-2022", but no client can send one yet.
+function encodeSolanaAsset(asset: SolanaSendIntent["asset"]): Uint8Array {
+  if (!isTokenAsset(asset)) return tlv(0x20, utf8("native"));
+  if (asset.type !== "spl-token") {
+    throw new AgentIntentSdkError(
+      `a Solana send takes a native or "spl-token" asset, got "${String(asset.type)}".`,
+    );
+  }
+  if ((asset as { assetOwner?: unknown }).assetOwner !== undefined) {
+    throw new AgentIntentSdkError("an SPL token asset has no assetOwner.");
+  }
+  return concatBytes(
+    tlv(0x20, utf8(asset.type)),
+    tlv(0x21, solanaAddress(asset.assetReference, "assetReference")),
   );
 }
 
