@@ -107,9 +107,14 @@ const deeplink = await client.createSwapIntent({
 ## List the agent's intents
 
 ```ts
+import { isSendOperation, isSwapOperation } from "@ledgerhq/agent-intent-sdk";
+
 let page = await client.listIntents({ status: ["signed", "broadcast"], pageSize: 10 });
 while (true) {
-  for (const intent of page.intents) console.log(intent.id, intent.status, intent.intent.amount);
+  for (const { id, status, intent } of page.intents) {
+    if (isSendOperation(intent)) console.log(id, status, intent.amount);
+    else if (isSwapOperation(intent)) console.log(id, status, intent.fromAmount, intent.toAmount);
+  }
   if (!page.nextCursor) break;
   page = await client.listIntents({ cursor: page.nextCursor });
 }
@@ -121,8 +126,10 @@ that agent issued, most recent first. `status` takes any of
 10, 50, 100; the BFF defaults to 10). `nextCursor` is opaque; when you pass it
 back, the first page's filters and page size apply and the other options are
 ignored. Amounts (`amount`, `fromAmount`, `toAmount`) are always exact decimal
-strings. HTTP failures throw `AgentIntentHttpError` with the BFF's `status` and
-`type`.
+strings. A send or swap with a missing or mistyped field fails the listing; an
+intent type the SDK doesn't know yet is passed through, so narrow with
+`isSendOperation` or `isSwapOperation`. HTTP failures throw
+`AgentIntentHttpError` with the BFF's `status` and `type`.
 
 ## Read one intent
 

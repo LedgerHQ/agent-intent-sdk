@@ -26,18 +26,57 @@ export function isAgentIntentPageSize(value: unknown): value is AgentIntentPageS
   return (AGENT_INTENT_PAGE_SIZES as readonly unknown[]).includes(value);
 }
 
-/** Fields depend on `type` and a newer BFF may add some, so only `type` is guaranteed. */
-export type AgentIntentOperation = {
-  type: string;
-  network?: string;
-  sender?: string;
-  recipient?: string;
-  amount?: string;
-  asset?: { type: string; assetReference?: string; assetOwner?: string };
+export type AgentIntentAsset = { type: string; assetReference?: string; assetOwner?: string };
+
+/**
+ * An EVM send has a `feeStrategy`, a Solana send may have a `memo`; tell them apart by `network`.
+ * Amounts are exact decimal strings.
+ */
+export type AgentIntentSendOperation = {
+  type: "send";
+  network: string;
+  sender: string;
+  recipient: string;
+  amount: string;
+  asset: AgentIntentAsset;
   feeStrategy?: string;
+  memo?: string;
   description?: string;
-  [field: string]: unknown;
 };
+
+/** Amounts are in the assets' human units, as the agent signed them. */
+export type AgentIntentSwapOperation = {
+  type: "swap";
+  network: string;
+  sender: string;
+  fromAsset: string;
+  toAsset: string;
+  fromAmount: string;
+  toAmount: string;
+  provider: string;
+  description?: string;
+};
+
+/** An intent type this SDK version doesn't know yet. */
+export type AgentIntentUnknownOperation = { type: string; [field: string]: unknown };
+
+/** Narrow with `isSendOperation` or `isSwapOperation`: the open variant stops `type` from narrowing. */
+export type AgentIntentOperation =
+  | AgentIntentSendOperation
+  | AgentIntentSwapOperation
+  | AgentIntentUnknownOperation;
+
+export function isSendOperation(
+  operation: AgentIntentOperation,
+): operation is AgentIntentSendOperation {
+  return operation.type === "send" && hasKnownFields(operation);
+}
+
+export function isSwapOperation(
+  operation: AgentIntentOperation,
+): operation is AgentIntentSwapOperation {
+  return operation.type === "swap" && hasKnownFields(operation);
+}
 
 /** `status` stays open so that a state a newer BFF adds never breaks parsing. */
 export type AgentIntentRecord = {
@@ -62,16 +101,23 @@ export type AgentIntentPage = {
   nextCursor?: string;
 };
 
-const OPTIONAL_STRING_FIELDS = [
-  "network",
-  "sender",
-  "recipient",
-  "amount",
-  "fromAmount",
-  "toAmount",
-  "feeStrategy",
-  "description",
-] as const;
+// The BFF drops null fields, so an optional one is either absent or a string.
+const OPERATION_FIELDS = new Map<string, { required: string[]; optional: string[] }>([
+  [
+    "send",
+    {
+      required: ["network", "sender", "recipient", "amount"],
+      optional: ["feeStrategy", "memo", "description"],
+    },
+  ],
+  [
+    "swap",
+    {
+      required: ["network", "sender", "fromAsset", "toAsset", "fromAmount", "toAmount", "provider"],
+      optional: ["description"],
+    },
+  ],
+]);
 
 export function parseAgentIntentPage(body: string, nextCursor: string | null): AgentIntentPage {
   const parsed = parseJson(body, "an intent listing");
@@ -100,7 +146,6 @@ function parseJson(body: string, subject: string): unknown {
 function isAgentIntentRecord(value: unknown): value is AgentIntentRecord {
   if (typeof value !== "object" || value === null) return false;
   const record = value as Record<string, unknown>;
-  const intent = record.intent as Record<string, unknown> | null | undefined;
   return (
     typeof record.id === "string" &&
     typeof record.agentPubkey === "string" &&
@@ -108,11 +153,24 @@ function isAgentIntentRecord(value: unknown): value is AgentIntentRecord {
     typeof record.createdAt === "string" &&
     typeof record.updatedAt === "string" &&
     (record.failureReason === undefined || typeof record.failureReason === "string") &&
-    typeof intent === "object" &&
-    intent !== null &&
-    typeof intent.type === "string" &&
-    OPTIONAL_STRING_FIELDS.every((field) => isOptionalString(intent[field])) &&
-    isOptionalAsset(intent.asset)
+    isOperation(record.intent)
+  );
+}
+
+function isOperation(value: unknown): value is AgentIntentOperation {
+  if (typeof value !== "object" || value === null) return false;
+  const operation = value as Record<string, unknown>;
+  return typeof operation.type === "string" && hasKnownFields(operation);
+}
+
+/** True for a type this SDK doesn't know; for a send or swap, checks its fields. */
+function hasKnownFields(operation: Record<string, unknown>): boolean {
+  const fields = OPERATION_FIELDS.get(String(operation.type));
+  if (!fields) return true;
+  return (
+    fields.required.every((field) => typeof operation[field] === "string") &&
+    fields.optional.every((field) => isOptionalString(operation[field])) &&
+    (operation.type !== "send" || isAsset(operation.asset))
   );
 }
 
@@ -120,8 +178,7 @@ function isOptionalString(value: unknown): boolean {
   return value === undefined || typeof value === "string";
 }
 
-function isOptionalAsset(value: unknown): boolean {
-  if (value === undefined) return true;
+function isAsset(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
   const asset = value as Record<string, unknown>;
   return (
