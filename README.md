@@ -268,7 +268,10 @@ candidate connects, the cryptographic handshake, persistence, and
 acknowledgement defaults are 30 seconds each. The wait between a completed
 handshake and the delivered completion (device approval) is bounded only by
 `completionTimeoutMs` (15 minutes) and the request expiry, on both the host and
-the candidate. Applications may override these with the `timeouts` option. A
+the candidate. Applications may override these with the `timeouts` option.
+While a session is open, both sides send the relay a text `ping` every 60
+seconds, because the Trustchain relay drops a client after 5 minutes without a
+frame sent to it. A
 failed `authenticate` call rejects only that delivery, so the same or a later
 candidate can complete the same bounded host session. A persistence failure
 closes the session without acknowledging. If enrollment was committed before

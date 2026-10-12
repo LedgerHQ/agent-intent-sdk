@@ -221,7 +221,7 @@ describe("encrypted enrollment channel", () => {
     });
     expect(relay.sockets).toHaveLength(1);
     expect(relay.sockets[0]?.listenerCount).toEqual({
-      open: 0,
+      open: 1,
       message: 1,
       error: 1,
       close: 1,
@@ -555,6 +555,88 @@ describe("encrypted enrollment channel", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     await hostResult;
     expect(relay.sockets.every((socket) => socket.closed)).toBe(true);
+  });
+
+  it("keeps both relay sockets past the relay's 5-minute idle timeout", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2098-01-01T00:00:00.000Z"));
+    const relay = new TestRelay();
+    relay.idleTimeoutMs = 5 * 60_000;
+    const agent = createSoftwareAgentIdentity();
+    const timeouts = {
+      ...shortTimeouts(),
+      candidateTimeoutMs: 30 * 60_000,
+      completionTimeoutMs: 30 * 60_000,
+    };
+    const host = createAgentEnrollmentChannelHost({
+      environment: "production",
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+      timeouts,
+    });
+    const request = channelRequest(agent, host.binding);
+    const waiting = host.waitForCompletion({
+      request,
+      authenticate: async () => undefined,
+      persist: async () => undefined,
+    });
+
+    // The user takes a while to open the enrollment link.
+    await vi.advanceTimersByTimeAsync(7 * 60_000);
+    expect(relay.sockets[0]?.closed).toBe(false);
+
+    const candidate = createAgentEnrollmentChannelCandidate({
+      request,
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+      timeouts,
+    });
+    const connected = candidate.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(connected).resolves.toBeUndefined();
+
+    // Ledger Sync activation and device approval take longer than the relay idle timeout too.
+    await vi.advanceTimersByTimeAsync(7 * 60_000);
+    expect(relay.sockets.some((socket) => socket.closed)).toBe(false);
+
+    const delivering = candidate.deliver(completionFor(agent.publicKey, "trusted"));
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(delivering).resolves.toBeUndefined();
+    await expect(waiting).resolves.toMatchObject({ trustchainId: "trusted" });
+
+    const pingsAtCompletion = relay.pings;
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(relay.pings).toBe(pingsAtCompletion);
+  });
+
+  it("stops pinging the relay once a session fails", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2098-01-01T00:00:00.000Z"));
+    const relay = new TestRelay();
+    const agent = createSoftwareAgentIdentity();
+    const host = createAgentEnrollmentChannelHost({
+      environment: "production",
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+      timeouts: {
+        ...shortTimeouts(),
+        candidateTimeoutMs: 2 * 60_000,
+        completionTimeoutMs: 2 * 60_000,
+      },
+    });
+    const waiting = host.waitForCompletion({
+      request: channelRequest(agent, host.binding),
+      authenticate: async () => undefined,
+      persist: async () => undefined,
+    });
+    const hostResult = expect(waiting).rejects.toThrow(/timed out/);
+
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+    await hostResult;
+    const pingsAtFailure = relay.pings;
+    expect(pingsAtFailure).toBeGreaterThan(0);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(relay.pings).toBe(pingsAtFailure);
   });
 
   it("reconnects implicitly when the relay drops the session before delivery", async () => {
@@ -945,6 +1027,10 @@ class TestSocket implements EnrollmentChannelWebSocket {
 
 class TestRelay {
   readonly sockets: TestSocket[] = [];
+  /** Like the Trustchain relay: drop a socket after this long without a frame sent to it. */
+  idleTimeoutMs: number | undefined;
+  pings = 0;
+  private readonly idleTimers = new Map<TestSocket, ReturnType<typeof setTimeout>>();
 
   constructor(
     private readonly droppedMessage?: string,
@@ -954,11 +1040,17 @@ class TestRelay {
   readonly factory: EnrollmentChannelWebSocketFactory = () => {
     const socket = new TestSocket(this);
     this.sockets.push(socket);
+    this.touch(socket);
     queueMicrotask(() => socket.emit("open"));
     return socket;
   };
 
   forward(sender: TestSocket, data: string): void {
+    if (data === "ping") {
+      this.pings += 1;
+      this.deliver(sender, "pong");
+      return;
+    }
     const envelope = JSON.parse(data) as { message?: string };
     if (envelope.message === this.droppedMessage) return;
     const host = this.sockets[0];
@@ -966,11 +1058,23 @@ class TestRelay {
       sender === host ? this.sockets.slice(1).filter((socket) => !socket.closed) : [host];
     for (const recipient of recipients) {
       if (recipient && !recipient.closed) {
-        queueMicrotask(() => recipient.emit("message", { data }));
-        if (envelope.message === this.duplicatedMessage) {
-          queueMicrotask(() => recipient.emit("message", { data }));
-        }
+        this.deliver(recipient, data);
+        if (envelope.message === this.duplicatedMessage) this.deliver(recipient, data);
       }
     }
+  }
+
+  private deliver(recipient: TestSocket, data: string): void {
+    this.touch(recipient);
+    queueMicrotask(() => recipient.emit("message", { data }));
+  }
+
+  private touch(socket: TestSocket): void {
+    if (this.idleTimeoutMs === undefined) return;
+    clearTimeout(this.idleTimers.get(socket));
+    this.idleTimers.set(
+      socket,
+      setTimeout(() => socket.close(), this.idleTimeoutMs),
+    );
   }
 }
