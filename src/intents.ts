@@ -150,9 +150,7 @@ function encodeEvmSend(intent: EvmSendIntent): EncodedSend {
     tlv(0x13, unsignedMinimal(amount)),
     tlv(0x14, encodeAsset(intent.asset)),
     tlv(0x15, Uint8Array.of(feeStrategyCode(intent.feeStrategy))),
-    intent.description === undefined
-      ? new Uint8Array()
-      : tlv(0x16, utf8(assertBoundedText(intent.description, "description"))),
+    optionalText(0x16, intent.description, "description"),
     tlv(0x23, utf8(intent.network)),
   );
   return {
@@ -191,12 +189,8 @@ function encodeSolanaSend(intent: SolanaSendIntent): EncodedSend {
     tlv(0x12, solanaAddress(intent.recipient, "recipient")),
     tlv(0x13, unsignedMinimal(amount)),
     tlv(0x14, encodeAsset(intent.asset)),
-    intent.description === undefined
-      ? new Uint8Array()
-      : tlv(0x16, utf8(assertBoundedText(intent.description, "description"))),
-    intent.memo === undefined
-      ? new Uint8Array()
-      : tlv(0x17, utf8(assertBoundedText(intent.memo, "memo"))),
+    optionalText(0x16, intent.description, "description"),
+    optionalText(0x17, intent.memo, "memo"),
     tlv(0x23, utf8(intent.network)),
   );
   return {
@@ -215,12 +209,12 @@ function encodeSolanaSend(intent: SolanaSendIntent): EncodedSend {
   };
 }
 
-function envelope(payload: Uint8Array, nonce: string): Uint8Array {
+function envelope(payload: Uint8Array, nonce: string, intentType = 0x01): Uint8Array {
   return tlv(
     0xc1,
     concatBytes(
       tlv(0x01, Uint8Array.of(0x01)),
-      tlv(0x02, Uint8Array.of(0x01)),
+      tlv(0x02, Uint8Array.of(intentType)),
       tlv(0x10, payload),
       tlv(0xda, exactHex(nonce, 16, "nonce")),
     ),
@@ -260,21 +254,13 @@ function encodeNormalizedSwapIntentTlv(swap: SwapIntent, nonce: string): Uint8Ar
     tlv(0x11, evmAddress(swap.sender, "sender")),
     tlv(0x13, utf8(swap.fromAmount)),
     tlv(0x14, utf8(swap.fromAsset)),
-    swap.description === undefined ? new Uint8Array() : tlv(0x16, utf8(swap.description)),
+    optionalText(0x16, swap.description, "description"),
     tlv(0x18, utf8(swap.toAsset)),
     tlv(0x19, utf8(swap.toAmount)),
     tlv(0x23, utf8(swap.network)),
     tlv(0x24, utf8(swap.provider)),
   );
-  return tlv(
-    0xc1,
-    concatBytes(
-      tlv(0x01, Uint8Array.of(0x01)),
-      tlv(0x02, Uint8Array.of(0x02)),
-      tlv(0x10, payload),
-      tlv(0xda, exactHex(nonce, 16, "nonce")),
-    ),
-  );
+  return envelope(payload, nonce, 0x02);
 }
 
 export function signSwapIntent(
@@ -429,6 +415,10 @@ function assertBoundedText(value: string, label: string): string {
     throw new AgentIntentSdkError(`${label} must contain between 1 and 280 UTF-16 code units.`);
   }
   return value;
+}
+
+function optionalText(tag: number, value: string | undefined, label: string): Uint8Array {
+  return value === undefined ? new Uint8Array() : tlv(tag, utf8(assertBoundedText(value, label)));
 }
 
 function identifier(value: string, label: string): string {
