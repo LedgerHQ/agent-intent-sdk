@@ -146,6 +146,15 @@ describe("Solana send signing contract", () => {
     expect(() => encodeSendIntentTlv(intent, NONCE)).toThrow("sender must be base58.");
   });
 
+  it("signs memo and description text in NFC, like the service", () => {
+    const decomposed = { ...SOLANA_SEND, memo: "cafe\u0301", description: "cafe\u0301" };
+    const composed = { ...SOLANA_SEND, memo: "caf\u00e9", description: "caf\u00e9" };
+
+    expect(bytesToHex(encodeSendIntentTlv(decomposed, NONCE))).toBe(
+      bytesToHex(encodeSendIntentTlv(composed, NONCE)),
+    );
+  });
+
   it("decodes an address of leading 1s to the all-zero key", () => {
     const encoded = bytesToHex(
       encodeSendIntentTlv({ ...SOLANA_SEND, sender: "1".repeat(32) }, NONCE),
