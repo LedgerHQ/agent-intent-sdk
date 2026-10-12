@@ -74,7 +74,7 @@ const deeplink = await client.createSwapIntent({
 
 `network` is one of `SWAP_INTENT_NETWORKS` (`ethereum`, `ethereum_sepolia`,
 `arc_testnet`). `fromAmount` and `toAmount` are human-unit decimal strings
-(`"0.5"` ETH, not wei).
+(`"0.5"` ETH, not wei), signed as given: `"1.5"` and `"1.50"` sign differently.
 
 ## List the agent's intents
 
