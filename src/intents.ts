@@ -31,6 +31,30 @@ export type SignedCreateIntent = {
   intent: Omit<SendIntent, "amount"> & { amount: string };
 };
 
+/** EVM networks the Agent Intent service accepts a Swap on. */
+export const SWAP_INTENT_NETWORKS = ["ethereum", "ethereum_sepolia", "arc_testnet"] as const;
+export type SwapIntentNetwork = (typeof SWAP_INTENT_NETWORKS)[number];
+
+export type SwapIntent = {
+  type: "swap";
+  network: SwapIntentNetwork;
+  sender: string;
+  fromAsset: string;
+  toAsset: string;
+  // Human-unit decimals such as "0.1", not base units.
+  fromAmount: string;
+  toAmount: string;
+  provider: string;
+  description?: string;
+};
+
+export type SignedSwapIntent = {
+  issuer: string;
+  signature: string;
+  nonce: string;
+  intent: SwapIntent;
+};
+
 const textEncoder = new TextEncoder();
 
 export function createNonce(
@@ -99,6 +123,71 @@ export function signCreateIntent(
       : { asset: { type: "native" as const } }),
   };
   const tlvBytes = encodeSendIntentTlv(intent, nonce);
+  return {
+    issuer: identity.publicKey,
+    signature: bytesToHex(identity.signDigest(sha256Digest(tlvBytes), SIGNATURE_DER)),
+    nonce,
+    intent: normalizedIntent,
+  };
+}
+
+export function normalizeSwapIntent(intent: SwapIntent): SwapIntent {
+  if (intent.type !== "swap") {
+    throw new AgentIntentSdkError(`expected a swap intent, got type "${String(intent.type)}".`);
+  }
+  if (!(SWAP_INTENT_NETWORKS as readonly string[]).includes(intent.network)) {
+    throw new AgentIntentSdkError(
+      `unsupported swap network "${String(intent.network)}"; use one of ${SWAP_INTENT_NETWORKS.join(", ")}.`,
+    );
+  }
+  return {
+    type: "swap",
+    network: intent.network,
+    sender: `0x${bytesToHex(evmAddress(intent.sender, "sender"))}`,
+    fromAsset: identifier(intent.fromAsset, "fromAsset"),
+    toAsset: identifier(intent.toAsset, "toAsset"),
+    fromAmount: naturalAmount(intent.fromAmount, "fromAmount"),
+    toAmount: naturalAmount(intent.toAmount, "toAmount"),
+    provider: identifier(intent.provider, "provider"),
+    ...(intent.description === undefined
+      ? {}
+      : { description: assertDescription(intent.description) }),
+  };
+}
+
+export function encodeSwapIntentTlv(intent: SwapIntent, nonce: string): Uint8Array {
+  return encodeNormalizedSwapIntentTlv(normalizeSwapIntent(intent), nonce);
+}
+
+function encodeNormalizedSwapIntentTlv(swap: SwapIntent, nonce: string): Uint8Array {
+  const payload = concatBytes(
+    tlv(0x11, evmAddress(swap.sender, "sender")),
+    tlv(0x13, utf8(swap.fromAmount)),
+    tlv(0x14, utf8(swap.fromAsset)),
+    swap.description === undefined ? new Uint8Array() : tlv(0x16, utf8(swap.description)),
+    tlv(0x18, utf8(swap.toAsset)),
+    tlv(0x19, utf8(swap.toAmount)),
+    tlv(0x23, utf8(swap.network)),
+    tlv(0x24, utf8(swap.provider)),
+  );
+  return tlv(
+    0xc1,
+    concatBytes(
+      tlv(0x01, Uint8Array.of(0x01)),
+      tlv(0x02, Uint8Array.of(0x02)),
+      tlv(0x10, payload),
+      tlv(0xda, exactHex(nonce, 16, "nonce")),
+    ),
+  );
+}
+
+export function signSwapIntent(
+  identity: AgentIdentity,
+  intent: SwapIntent,
+  nonce = createNonce(),
+): SignedSwapIntent {
+  const normalizedIntent = normalizeSwapIntent(intent);
+  const tlvBytes = encodeNormalizedSwapIntentTlv(normalizedIntent, nonce);
   return {
     issuer: identity.publicKey,
     signature: bytesToHex(identity.signDigest(sha256Digest(tlvBytes), SIGNATURE_DER)),
@@ -201,6 +290,25 @@ function assertDescription(value: string): string {
   const length = Array.from(value).length;
   if (length < 1 || length > 280) {
     throw new AgentIntentSdkError("description must contain between 1 and 280 characters.");
+  }
+  return value;
+}
+
+// The service's `NaturalAmount`: positive decimal text, no sign, exponent or leading zeros.
+const NATURAL_AMOUNT = /^(?!0(?:\.0+)?$)(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/;
+
+function naturalAmount(value: string, label: string): string {
+  if (!NATURAL_AMOUNT.test(value)) {
+    throw new AgentIntentSdkError(
+      `${label} must be a positive decimal such as 0.1 or 2000, with no sign, exponent or spaces.`,
+    );
+  }
+  return value;
+}
+
+function identifier(value: string, label: string): string {
+  if (value.length === 0 || value !== value.trim()) {
+    throw new AgentIntentSdkError(`${label} must be non-empty with no surrounding whitespace.`);
   }
   return value;
 }

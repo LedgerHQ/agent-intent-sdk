@@ -56,6 +56,26 @@ const deeplink = await client.createSendIntent({
 Amounts accept decimal strings or `bigint` and are serialized as exact JSON
 integers to avoid JavaScript precision loss.
 
+### Swap intents
+
+```ts
+const deeplink = await client.createSwapIntent({
+  type: "swap",
+  network: "ethereum",
+  sender,
+  fromAsset: "ethereum",
+  toAsset: "ethereum/erc20/usd__coin",
+  fromAmount: "0.5",
+  toAmount: "1250",
+  provider: "oneinch",
+  description: "Rebalance to USDC",
+});
+```
+
+`network` is one of `SWAP_INTENT_NETWORKS` (`ethereum`, `ethereum_sepolia`,
+`arc_testnet`). `fromAmount` and `toAmount` are human-unit decimal strings
+(`"0.5"` ETH, not wei), signed as given: `"1.5"` and `"1.50"` sign differently.
+
 ## List the agent's intents
 
 ```ts
