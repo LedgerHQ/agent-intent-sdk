@@ -156,7 +156,10 @@ export function normalizeSwapIntent(intent: SwapIntent): SwapIntent {
 }
 
 export function encodeSwapIntentTlv(intent: SwapIntent, nonce: string): Uint8Array {
-  const swap = normalizeSwapIntent(intent);
+  return encodeNormalizedSwapIntentTlv(normalizeSwapIntent(intent), nonce);
+}
+
+function encodeNormalizedSwapIntentTlv(swap: SwapIntent, nonce: string): Uint8Array {
   const payload = concatBytes(
     tlv(0x11, evmAddress(swap.sender, "sender")),
     tlv(0x13, utf8(swap.fromAmount)),
@@ -184,7 +187,7 @@ export function signSwapIntent(
   nonce = createNonce(),
 ): SignedSwapIntent {
   const normalizedIntent = normalizeSwapIntent(intent);
-  const tlvBytes = encodeSwapIntentTlv(normalizedIntent, nonce);
+  const tlvBytes = encodeNormalizedSwapIntentTlv(normalizedIntent, nonce);
   return {
     issuer: identity.publicKey,
     signature: bytesToHex(identity.signDigest(sha256Digest(tlvBytes), SIGNATURE_DER)),
