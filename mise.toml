@@ -9,4 +9,4 @@ lockfile_platforms = ["linux-arm64", "linux-x64", "macos-arm64", "macos-x64"]
 node = "24.14.0"
 pnpm = "11.13.1"
 actionlint = "v1.7.12"
-zizmor = "v1.28.0"
+zizmor = "v1.30.1"
