@@ -150,6 +150,16 @@ describe("Solana send signing contract", () => {
       { asset: { type: "spl-token", assetReference: `0x${"c6".repeat(32)}` } },
       "assetReference must be a 32-byte base58 address.",
     ],
+    [
+      "a non-base58 mint",
+      { asset: { type: "spl-token", assetReference: `${USDC_MINT.slice(0, -1)}0` } },
+      "assetReference must be base58.",
+    ],
+    [
+      "a 31-byte mint",
+      { asset: { type: "spl-token", assetReference: bs58.encode(new Uint8Array(31).fill(0xc6)) } },
+      "assetReference must be a 32-byte base58 address.",
+    ],
   ])("refuses %s", (_name, fields, message) => {
     const intent = { ...SOLANA_SEND, ...fields } as unknown as SendIntent;
 
