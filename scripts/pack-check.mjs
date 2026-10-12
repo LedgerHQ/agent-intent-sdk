@@ -54,7 +54,8 @@ try {
     path.join(consumerDirectory, "node_modules/@ledgerhq/agent-intent-sdk/dist/userAgent.js"),
     "utf8",
   );
-  if (!userAgentModule.includes(JSON.stringify(manifest.version))) {
+  const stamped = `const BUILD_VERSION = ${JSON.stringify(manifest.version)};`;
+  if (!userAgentModule.split("\n").includes(stamped)) {
     throw new Error("Packed userAgent.js does not carry the package version.");
   }
 

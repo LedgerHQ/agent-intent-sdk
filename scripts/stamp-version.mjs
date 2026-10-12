@@ -11,6 +11,11 @@ const stamped = `const BUILD_VERSION = ${JSON.stringify(version)};`;
 const occurrences = source.split(placeholder).length - 1;
 if (occurrences === 0 && source.includes(stamped)) process.exit(0);
 if (occurrences !== 1) {
-  throw new Error(`Expected one ${placeholder} in ${target}.`);
+  const current = /const BUILD_VERSION = ("[^"]*");/.exec(source)?.[1];
+  throw new Error(
+    current
+      ? `${target} is stamped with ${current}, expected ${JSON.stringify(version)}; run pnpm build.`
+      : `Expected one ${placeholder} in ${target}.`,
+  );
 }
 await writeFile(target, source.replace(placeholder, JSON.stringify(version)));
