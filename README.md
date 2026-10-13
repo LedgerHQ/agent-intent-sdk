@@ -127,10 +127,10 @@ that agent issued, most recent first. `status` takes any of
 back, the first page's filters and page size apply and the other options are
 ignored. Amounts are exact strings: a send's `amount` is an integer in the
 asset's smallest unit (wei, lamports, token base units), a swap's `fromAmount`
-and `toAmount` are decimals in human units. One record with a missing or
-mistyped field, `null` included, fails the whole page with an
-`AgentIntentSdkError`: a record field such as `failureReason` on any intent, or
-a send or swap field. An intent type the SDK doesn't know yet is passed
+and `toAmount` are decimals in human units. One record that lacks a required
+field, or has a known field of the wrong type (`null` included, even on an
+optional field such as `failureReason` or `memo`), fails the whole page with an
+`AgentIntentSdkError`. An intent type the SDK doesn't know yet is passed
 through, so narrow with `isSendOperation` or `isSwapOperation`. HTTP failures
 throw `AgentIntentHttpError` with the BFF's `status` and `type`.
 
