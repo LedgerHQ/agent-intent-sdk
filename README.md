@@ -271,11 +271,11 @@ handshake and the delivered completion (device approval) is bounded only by
 the candidate. Applications may override these with the `timeouts` option.
 While a session is open, both sides send the relay a text `ping` every 60
 seconds, because the Trustchain relay drops a client after 5 minutes without a
-frame sent to it. A
-failed `authenticate` call rejects only that delivery, so the same or a later
-candidate can complete the same bounded host session. A persistence failure
-closes the session without acknowledging. If enrollment was committed before
-delivery failed, re-enroll the agent with a channel-bound recovery request.
+frame sent to it. A failed `authenticate` call rejects only that delivery, so
+the same or a later candidate can complete the same bounded host session. A
+persistence failure closes the session without acknowledging. If enrollment was
+committed before delivery failed, re-enroll the agent with a channel-bound
+recovery request.
 
 The channel sends only the agent public key, App-18 Trustchain ID, and safe
 App-16 environment/root/path references. It must never carry a serialized

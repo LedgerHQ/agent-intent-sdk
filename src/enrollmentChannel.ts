@@ -120,7 +120,7 @@ export function createAgentEnrollmentChannelHost(input: {
   const timeouts = resolveTimeouts(input.timeouts);
   let used = false;
   let closed = false;
-  let socket: EnrollmentChannelWebSocket | undefined;
+  let session: HostSession | undefined;
 
   return {
     binding: { environment: input.environment, hostPublicKey: publisher },
@@ -132,23 +132,25 @@ export function createAgentEnrollmentChannelHost(input: {
       }
       assertHostRequest(request, input.environment, publisher);
       used = true;
+      let socket: EnrollmentChannelWebSocket;
       try {
         socket = socketFactory(input.webSocketFactory)(relayUrl(input.relayBaseUrl, publisher));
       } catch (error) {
         return Promise.reject(asChannelError(error));
       }
-      return runHost(
+      session = runHost(
         socket,
         identity,
         request,
         authenticate as (completion: AgentEnrollmentChannelCompletion) => Promise<void>,
         persist as (completion: AgentEnrollmentChannelCompletion) => Promise<void>,
         timeouts,
-      ) as Promise<AgentEnrollmentChannelCompletion<typeof request>>;
+      );
+      return session.completion as Promise<AgentEnrollmentChannelCompletion<typeof request>>;
     },
     close: () => {
       closed = true;
-      socket?.close();
+      session?.close();
     },
   };
 }
@@ -216,6 +218,11 @@ export function createAgentEnrollmentChannelCandidate(input: {
   };
 }
 
+type HostSession = {
+  readonly completion: Promise<AgentEnrollmentChannelCompletion>;
+  close(): void;
+};
+
 function runHost(
   socket: EnrollmentChannelWebSocket,
   identity: ReturnType<typeof createSoftwareAgentIdentity>,
@@ -223,8 +230,9 @@ function runHost(
   authenticate: (completion: AgentEnrollmentChannelCompletion) => Promise<void>,
   persist: (completion: AgentEnrollmentChannelCompletion) => Promise<void>,
   timeouts: Required<AgentEnrollmentChannelTimeouts>,
-): Promise<AgentEnrollmentChannelCompletion> {
-  return new Promise((resolve, reject) => {
+): HostSession {
+  let close: () => void = () => undefined;
+  const completion = new Promise<AgentEnrollmentChannelCompletion>((resolve, reject) => {
     let state:
       | "connected"
       | "challenged"
@@ -292,6 +300,8 @@ function runHost(
         asChannelError(reason);
       }
     };
+    // Stops timers and keepalive itself rather than relying on the socket's close event.
+    close = () => fail(channelError("This enrollment host session has been closed."));
     armCandidateTimer();
     socket.addEventListener("open", () => {
       if (state !== "finished") stopKeepAlive = keepRelayAlive(socket);
@@ -410,6 +420,7 @@ function runHost(
         });
     });
   });
+  return { completion, close: () => close() };
 }
 
 type CandidateSession = {
@@ -704,13 +715,17 @@ function keepRelayAlive(socket: EnrollmentChannelWebSocket): () => void {
 }
 
 function isRelayKeepAliveReply(data: unknown): boolean {
-  return data === RELAY_KEEPALIVE_PONG;
+  return frameText(data) === RELAY_KEEPALIVE_PONG;
+}
+
+function frameText(data: unknown): string {
+  return typeof data === "string" ? data : String(data);
 }
 
 function parseEnvelope(data: unknown): RelayEnvelope {
   let value: unknown;
   try {
-    value = JSON.parse(typeof data === "string" ? data : String(data));
+    value = JSON.parse(frameText(data));
   } catch {
     throw channelError("Enrollment relay returned invalid JSON.");
   }

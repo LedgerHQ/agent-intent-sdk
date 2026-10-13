@@ -639,6 +639,76 @@ describe("encrypted enrollment channel", () => {
     expect(relay.pings).toBe(pingsAtFailure);
   });
 
+  it("stops pinging when the host closes over a socket that never reports close", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2098-01-01T00:00:00.000Z"));
+    const relay = new TestRelay();
+    relay.socketsEmitClose = false;
+    const agent = createSoftwareAgentIdentity();
+    const host = createAgentEnrollmentChannelHost({
+      environment: "production",
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+      timeouts: {
+        ...shortTimeouts(),
+        candidateTimeoutMs: 30 * 60_000,
+        completionTimeoutMs: 30 * 60_000,
+      },
+    });
+    const waiting = host.waitForCompletion({
+      request: channelRequest(agent, host.binding),
+      authenticate: async () => undefined,
+      persist: async () => undefined,
+    });
+    const hostResult = expect(waiting).rejects.toThrow(/has been closed/);
+
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+    expect(relay.pings).toBeGreaterThan(0);
+    host.close();
+    await hostResult;
+    const pingsAtClose = relay.pings;
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(relay.pings).toBe(pingsAtClose);
+  });
+
+  it("ignores relay pong replies delivered as binary frames", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2098-01-01T00:00:00.000Z"));
+    const relay = new TestRelay();
+    relay.binaryFrames = true;
+    const agent = createSoftwareAgentIdentity();
+    const timeouts = { ...shortTimeouts(), completionTimeoutMs: 30 * 60_000 };
+    const host = createAgentEnrollmentChannelHost({
+      environment: "production",
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+      timeouts,
+    });
+    const request = channelRequest(agent, host.binding);
+    const waiting = host.waitForCompletion({
+      request,
+      authenticate: async () => undefined,
+      persist: async () => undefined,
+    });
+    const candidate = createAgentEnrollmentChannelCandidate({
+      request,
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+      timeouts,
+    });
+    const connected = candidate.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(connected).resolves.toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(3 * 60_000);
+    expect(relay.pings).toBeGreaterThan(0);
+
+    const delivering = candidate.deliver(completionFor(agent.publicKey, "trusted"));
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(delivering).resolves.toBeUndefined();
+    await expect(waiting).resolves.toMatchObject({ trustchainId: "trusted" });
+  });
+
   it("reconnects implicitly when the relay drops the session before delivery", async () => {
     const relay = new TestRelay();
     const agent = createSoftwareAgentIdentity();
@@ -1008,7 +1078,7 @@ class TestSocket implements EnrollmentChannelWebSocket {
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    queueMicrotask(() => this.emit("close"));
+    if (this.relay.socketsEmitClose) queueMicrotask(() => this.emit("close"));
   }
 
   addEventListener(type: "open" | "message" | "error" | "close", listener: never): void {
@@ -1030,6 +1100,10 @@ class TestRelay {
   /** Like the Trustchain relay: drop a socket after this long without a frame sent to it. */
   idleTimeoutMs: number | undefined;
   pings = 0;
+  /** Deliver frames as Buffers, like some Node WebSocket clients. */
+  binaryFrames = false;
+  /** Whether a closed socket emits a close event; custom factories might not. */
+  socketsEmitClose = true;
   private readonly idleTimers = new Map<TestSocket, ReturnType<typeof setTimeout>>();
 
   constructor(
@@ -1066,7 +1140,8 @@ class TestRelay {
 
   private deliver(recipient: TestSocket, data: string): void {
     this.touch(recipient);
-    queueMicrotask(() => recipient.emit("message", { data }));
+    const frame = this.binaryFrames ? Buffer.from(data) : data;
+    queueMicrotask(() => recipient.emit("message", { data: frame }));
   }
 
   private touch(socket: TestSocket): void {
