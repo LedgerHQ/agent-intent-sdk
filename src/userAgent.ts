@@ -24,18 +24,21 @@ export function withAgentUserAgent(fetcher: typeof globalThis.fetch): typeof glo
   const userAgent = agentUserAgent();
   if (!userAgent) return fetcher;
   // `init.headers` replaces a Request's own headers, so start from them when init has none.
+  // Checked by shape: a polyfilled or cross-realm Request isn't an `instanceof Request`.
   return (input, init) =>
     fetcher(input, {
       ...init,
       headers: withUserAgentHeader(
-        init?.headers ?? (input instanceof Request ? input.headers : undefined),
+        init?.headers ??
+          (typeof input === "object" && "headers" in input ? input.headers : undefined),
         userAgent,
       ),
     });
 }
 
 function withUserAgentHeader(headers: HeadersInit | undefined, userAgent: string): HeadersInit {
-  if (headers instanceof Headers || Array.isArray(headers)) {
+  // Iterable rather than `instanceof Headers`, so a polyfilled or cross-realm Headers isn't read as a record.
+  if (headers && Symbol.iterator in headers) {
     const merged = new Headers(headers);
     if (!merged.has("user-agent")) merged.set("user-agent", userAgent);
     return merged;

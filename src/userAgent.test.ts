@@ -84,6 +84,28 @@ describe("agent User-Agent", () => {
     expect(new Headers(fetcher.mock.calls[0]?.[1]?.headers).get("user-agent")).toBe("host/1.0");
   });
 
+  it("keeps the headers of a Request from another implementation", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(null));
+    // Shaped like a Request and its Headers (a polyfill, or from another realm), but instances of neither.
+    class ForeignHeaders {
+      *[Symbol.iterator]() {
+        yield ["authorization", "Bearer agent-token"];
+      }
+    }
+    const foreign = {
+      url: "https://bff.example",
+      headers: new ForeignHeaders(),
+    } as unknown as Request;
+    expect(foreign instanceof Request).toBe(false);
+    expect(foreign.headers instanceof Headers).toBe(false);
+
+    await withAgentUserAgent(fetcher)(foreign);
+
+    const headers = new Headers(fetcher.mock.calls[0]?.[1]?.headers);
+    expect(headers.get("authorization")).toBe("Bearer agent-token");
+    expect(headers.get("user-agent")).toBe(USER_AGENT);
+  });
+
   it("leaves browser requests to the browser's own User-Agent", () => {
     vi.stubGlobal("process", undefined);
     const fetcher = vi.fn<typeof fetch>();
