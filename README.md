@@ -125,10 +125,12 @@ that agent issued, most recent first. `status` takes any of
 `AGENT_INTENT_STATUSES` and `pageSize` one of `AGENT_INTENT_PAGE_SIZES` (1, 5,
 10, 50, 100; the BFF defaults to 10). `nextCursor` is opaque; when you pass it
 back, the first page's filters and page size apply and the other options are
-ignored. Amounts (`amount`, `fromAmount`, `toAmount`) are always exact decimal
-strings. A send or swap with a missing or mistyped field fails the listing; an
-intent type the SDK doesn't know yet is passed through, so narrow with
-`isSendOperation` or `isSwapOperation`. HTTP failures throw
+ignored. Amounts are always exact decimal strings: a send's `amount` in the
+asset's smallest unit (wei, lamports, token base units), a swap's `fromAmount`
+and `toAmount` in human units. One send or swap with a missing or mistyped
+field, `null` included, fails the whole page; an intent type the SDK doesn't
+know yet is passed through, so narrow with `isSendOperation` or
+`isSwapOperation`. HTTP failures throw
 `AgentIntentHttpError` with the BFF's `status` and `type`.
 
 ## Read one intent

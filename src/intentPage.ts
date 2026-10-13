@@ -30,7 +30,8 @@ export type AgentIntentAsset = { type: string; assetReference?: string; assetOwn
 
 /**
  * An EVM send has a `feeStrategy`, a Solana send may have a `memo`; tell them apart by `network`.
- * Amounts are exact decimal strings.
+ * `amount` is an exact decimal string in the asset's smallest unit (wei, lamports, token base
+ * units), unlike a swap's human-unit amounts.
  */
 export type AgentIntentSendOperation = {
   type: "send";
@@ -101,7 +102,8 @@ export type AgentIntentPage = {
   nextCursor?: string;
 };
 
-// The BFF drops null fields, so an optional one is either absent or a string.
+// The BFF drops null fields, so an optional one is either absent or a string; a `null` one fails
+// the page like any other mistyped field.
 const OPERATION_FIELDS = new Map<string, { required: string[]; optional: string[] }>([
   [
     "send",
