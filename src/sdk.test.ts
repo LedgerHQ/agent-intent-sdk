@@ -620,6 +620,8 @@ describe("agent intent listing", () => {
     ["sender", RECORD.intent, { sender: false }],
     ["recipient", RECORD.intent, { recipient: {} }],
     ["feeStrategy", RECORD.intent, { feeStrategy: 1 }],
+    ["feeStrategy sent as null", RECORD.intent, { feeStrategy: null }],
+    ["memo sent as null", SOLANA_INTENT, { memo: null }],
     ["description", RECORD.intent, { description: 123 }],
     ["asset", RECORD.intent, { asset: "native" }],
     ["asset type", RECORD.intent, { asset: { type: 3 } }],
@@ -678,8 +680,20 @@ describe("agent intent listing", () => {
     ]);
   });
 
+  it.each([
+    ["a send", RECORD.intent],
+    ["an intent type it doesn't know", { type: "stake", validator: "v1" }],
+  ])("rejects a failureReason sent as null on %s", async (_case, intent) => {
+    const record = { ...RECORD, intent, failureReason: null };
+    const { client } = listingClient(new Response(JSON.stringify([record]), { status: 200 }));
+
+    await expect(client.listIntents()).rejects.toThrow(
+      new AgentIntentSdkError("BFF returned an intent listing with an unexpected shape."),
+    );
+  });
+
   it("keeps fields a newer BFF adds to an intent", async () => {
-    const record = { ...RECORD, intent: { ...RECORD.intent, provider: "lifi", hops: 2 } };
+    const record = { ...RECORD, intent: { ...RECORD.intent, futureField: "x", hops: 2 } };
     const { client } = listingClient(new Response(JSON.stringify([record]), { status: 200 }));
 
     await expect(client.listIntents()).resolves.toEqual({ intents: [record] });
