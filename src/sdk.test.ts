@@ -620,6 +620,8 @@ describe("agent intent listing", () => {
     ["sender", RECORD.intent, { sender: false }],
     ["recipient", RECORD.intent, { recipient: {} }],
     ["feeStrategy", RECORD.intent, { feeStrategy: 1 }],
+    ["feeStrategy sent as null", RECORD.intent, { feeStrategy: null }],
+    ["memo sent as null", SOLANA_INTENT, { memo: null }],
     ["description", RECORD.intent, { description: 123 }],
     ["asset", RECORD.intent, { asset: "native" }],
     ["asset type", RECORD.intent, { asset: { type: 3 } }],
@@ -679,7 +681,7 @@ describe("agent intent listing", () => {
   });
 
   it("keeps fields a newer BFF adds to an intent", async () => {
-    const record = { ...RECORD, intent: { ...RECORD.intent, provider: "lifi", hops: 2 } };
+    const record = { ...RECORD, intent: { ...RECORD.intent, futureField: "x", hops: 2 } };
     const { client } = listingClient(new Response(JSON.stringify([record]), { status: 200 }));
 
     await expect(client.listIntents()).resolves.toEqual({ intents: [record] });
