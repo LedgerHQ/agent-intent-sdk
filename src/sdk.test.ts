@@ -680,6 +680,18 @@ describe("agent intent listing", () => {
     ]);
   });
 
+  it.each([
+    ["a send", RECORD.intent],
+    ["an intent type it doesn't know", { type: "stake", validator: "v1" }],
+  ])("rejects a failureReason sent as null on %s", async (_case, intent) => {
+    const record = { ...RECORD, intent, failureReason: null };
+    const { client } = listingClient(new Response(JSON.stringify([record]), { status: 200 }));
+
+    await expect(client.listIntents()).rejects.toThrow(
+      new AgentIntentSdkError("BFF returned an intent listing with an unexpected shape."),
+    );
+  });
+
   it("keeps fields a newer BFF adds to an intent", async () => {
     const record = { ...RECORD, intent: { ...RECORD.intent, futureField: "x", hops: 2 } };
     const { client } = listingClient(new Response(JSON.stringify([record]), { status: 200 }));
