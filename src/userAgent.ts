@@ -37,7 +37,8 @@ export function withAgentUserAgent(fetcher: typeof globalThis.fetch): typeof glo
 }
 
 function withUserAgentHeader(headers: HeadersInit | undefined, userAgent: string): HeadersInit {
-  if (headers instanceof Headers || Array.isArray(headers)) {
+  // Iterable rather than `instanceof Headers`, so a polyfilled or cross-realm Headers isn't read as a record.
+  if (headers && Symbol.iterator in headers) {
     const merged = new Headers(headers);
     if (!merged.has("user-agent")) merged.set("user-agent", userAgent);
     return merged;

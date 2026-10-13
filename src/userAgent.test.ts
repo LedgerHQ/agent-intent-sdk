@@ -86,12 +86,18 @@ describe("agent User-Agent", () => {
 
   it("keeps the headers of a Request from another implementation", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(null));
-    // Shaped like a Request (a polyfill, or one from another realm) but not an instance of this one.
+    // Shaped like a Request and its Headers (a polyfill, or from another realm), but instances of neither.
+    class ForeignHeaders {
+      *[Symbol.iterator]() {
+        yield ["authorization", "Bearer agent-token"];
+      }
+    }
     const foreign = {
       url: "https://bff.example",
-      headers: new Headers({ Authorization: "Bearer agent-token" }),
+      headers: new ForeignHeaders(),
     } as unknown as Request;
     expect(foreign instanceof Request).toBe(false);
+    expect(foreign.headers instanceof Headers).toBe(false);
 
     await withAgentUserAgent(fetcher)(foreign);
 
