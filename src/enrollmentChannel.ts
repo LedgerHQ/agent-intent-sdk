@@ -25,6 +25,13 @@ import {
 const PROTOCOL_VERSION = 1;
 const CHANNEL_DOMAIN = new TextEncoder().encode("agent-intent:enrollment-channel:v1");
 
+// The Trustchain relay drops a client after 5 minutes without a frame sent to it. Its own
+// WebSocket heartbeats and pong replies do not count, but it answers a text "ping" with a
+// text "pong" to the sender only, so each side sends one well inside that window.
+const RELAY_KEEPALIVE_INTERVAL_MS = 60_000;
+const RELAY_KEEPALIVE_PING = "ping";
+const RELAY_KEEPALIVE_PONG = "pong";
+
 type RelayMessageName =
   | "InitiateHandshake"
   | "HandshakeChallenge"
@@ -113,7 +120,7 @@ export function createAgentEnrollmentChannelHost(input: {
   const timeouts = resolveTimeouts(input.timeouts);
   let used = false;
   let closed = false;
-  let socket: EnrollmentChannelWebSocket | undefined;
+  let session: HostSession | undefined;
 
   return {
     binding: { environment: input.environment, hostPublicKey: publisher },
@@ -125,23 +132,25 @@ export function createAgentEnrollmentChannelHost(input: {
       }
       assertHostRequest(request, input.environment, publisher);
       used = true;
+      let socket: EnrollmentChannelWebSocket;
       try {
         socket = socketFactory(input.webSocketFactory)(relayUrl(input.relayBaseUrl, publisher));
       } catch (error) {
         return Promise.reject(asChannelError(error));
       }
-      return runHost(
+      session = runHost(
         socket,
         identity,
         request,
         authenticate as (completion: AgentEnrollmentChannelCompletion) => Promise<void>,
         persist as (completion: AgentEnrollmentChannelCompletion) => Promise<void>,
         timeouts,
-      ) as Promise<AgentEnrollmentChannelCompletion<typeof request>>;
+      );
+      return session.completion as Promise<AgentEnrollmentChannelCompletion<typeof request>>;
     },
     close: () => {
       closed = true;
-      socket?.close();
+      session?.close();
     },
   };
 }
@@ -209,6 +218,11 @@ export function createAgentEnrollmentChannelCandidate(input: {
   };
 }
 
+type HostSession = {
+  readonly completion: Promise<AgentEnrollmentChannelCompletion>;
+  close(): void;
+};
+
 function runHost(
   socket: EnrollmentChannelWebSocket,
   identity: ReturnType<typeof createSoftwareAgentIdentity>,
@@ -216,8 +230,9 @@ function runHost(
   authenticate: (completion: AgentEnrollmentChannelCompletion) => Promise<void>,
   persist: (completion: AgentEnrollmentChannelCompletion) => Promise<void>,
   timeouts: Required<AgentEnrollmentChannelTimeouts>,
-): Promise<AgentEnrollmentChannelCompletion> {
-  return new Promise((resolve, reject) => {
+): HostSession {
+  let close: () => void = () => undefined;
+  const completion = new Promise<AgentEnrollmentChannelCompletion>((resolve, reject) => {
     let state:
       | "connected"
       | "challenged"
@@ -230,6 +245,7 @@ function runHost(
     let challenge = "";
     let phaseTimer: ReturnType<typeof setTimeout> | undefined;
     let completionTimer: ReturnType<typeof setTimeout> | undefined;
+    let stopKeepAlive: () => void = () => undefined;
     let messageQueue = Promise.resolve();
 
     const fail = failChannel(
@@ -240,6 +256,7 @@ function runHost(
         state = "finished";
         clearTimeout(phaseTimer);
         clearTimeout(completionTimer);
+        stopKeepAlive();
       },
     );
     const armCandidateTimer = () => {
@@ -283,7 +300,12 @@ function runHost(
         asChannelError(reason);
       }
     };
+    // Stops timers and keepalive itself rather than relying on the socket's close event.
+    close = () => fail(channelError("This enrollment host session has been closed."));
     armCandidateTimer();
+    socket.addEventListener("open", () => {
+      if (state !== "finished") stopKeepAlive = keepRelayAlive(socket);
+    });
     socket.addEventListener("error", () =>
       fail(channelError("Enrollment relay connection failed.")),
     );
@@ -291,6 +313,7 @@ function runHost(
       fail(channelError("Enrollment relay closed before completion was acknowledged.")),
     );
     socket.addEventListener("message", (event) => {
+      if (isRelayKeepAliveReply(event.data)) return;
       messageQueue = messageQueue
         .then(async () => {
           const envelope = parseEnvelope(event.data);
@@ -380,6 +403,7 @@ function runHost(
             state = "finished";
             clearTimeout(completionTimer);
             clearTimeout(phaseTimer);
+            stopKeepAlive();
             socket.close();
             resolve(completion);
             return;
@@ -396,6 +420,7 @@ function runHost(
         });
     });
   });
+  return { completion, close: () => close() };
 }
 
 type CandidateSession = {
@@ -419,6 +444,7 @@ function openCandidateSession(
   let cipher: ChannelCipher | undefined;
   let failure: AgentIntentSdkError | undefined;
   let phaseTimer: ReturnType<typeof setTimeout> | undefined;
+  let stopKeepAlive: () => void = () => undefined;
   let messageQueue = Promise.resolve();
   let delivery:
     | { digest: string; resolve: () => void; reject: (reason: unknown) => void }
@@ -444,6 +470,7 @@ function openCandidateSession(
       state = "failed";
       clearTimeout(phaseTimer);
       clearTimeout(sessionTimer);
+      stopKeepAlive();
     },
   );
   // Bounds the whole session, including the device-approval gap between connect() and deliver().
@@ -467,11 +494,13 @@ function openCandidateSession(
         payload: { ephemeral_public_key: publisher },
       });
       state = "initiated";
+      stopKeepAlive = keepRelayAlive(socket);
     } catch (error) {
       fail(error);
     }
   });
   socket.addEventListener("message", (event) => {
+    if (isRelayKeepAliveReply(event.data)) return;
     messageQueue = messageQueue
       .then(async () => {
         const envelope = parseEnvelope(event.data);
@@ -522,6 +551,7 @@ function openCandidateSession(
           state = "finished";
           clearTimeout(phaseTimer);
           clearTimeout(sessionTimer);
+          stopKeepAlive();
           socket.close();
           delivery.resolve();
           return;
@@ -672,10 +702,30 @@ function send(socket: EnrollmentChannelWebSocket, envelope: RelayEnvelope): void
   socket.send(JSON.stringify(envelope));
 }
 
+/** Pings the relay until the returned stop function runs. */
+function keepRelayAlive(socket: EnrollmentChannelWebSocket): () => void {
+  const timer = setInterval(() => {
+    try {
+      socket.send(RELAY_KEEPALIVE_PING);
+    } catch {
+      // A socket that cannot send is closing; its close and error listeners report the failure.
+    }
+  }, RELAY_KEEPALIVE_INTERVAL_MS);
+  return () => clearInterval(timer);
+}
+
+function isRelayKeepAliveReply(data: unknown): boolean {
+  return frameText(data) === RELAY_KEEPALIVE_PONG;
+}
+
+function frameText(data: unknown): string {
+  return typeof data === "string" ? data : String(data);
+}
+
 function parseEnvelope(data: unknown): RelayEnvelope {
   let value: unknown;
   try {
-    value = JSON.parse(typeof data === "string" ? data : String(data));
+    value = JSON.parse(frameText(data));
   } catch {
     throw channelError("Enrollment relay returned invalid JSON.");
   }
