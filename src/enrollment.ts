@@ -2,11 +2,10 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { AgentIntentSdkError, bytesToHex, hexToBytes } from "./bytes.ts";
 import { SIGNATURE_COMPACT, sha256Digest, type AgentIdentity } from "./identity.ts";
 import {
-  isCompactSignature,
-  isCompressedPublicKey,
-  isEnrollmentEnvironment,
-  isPublicKey,
-  singleString,
+  checkEnrollmentLink,
+  malformedLink,
+  malformedLinkMessage,
+  type MalformedAgentLink,
 } from "./requestFields.ts";
 
 export const AGENT_ENROLLMENT_VERSION = "1";
@@ -59,9 +58,10 @@ type UnsignedAgentEnrollmentRequest =
 
 export type AgentEnrollmentValidation =
   | { status: "valid"; request: AgentEnrollmentRequest }
+  | MalformedAgentLink
   | {
       status: "invalid";
-      reason: "expired" | "invalid-signature" | "malformed" | "unsupported-source";
+      reason: "expired" | "invalid-signature" | "unsupported-source";
       message: string;
     };
 
@@ -169,69 +169,31 @@ export function validateAgentEnrollment(
   search: Record<string, unknown>,
   now = new Date(),
 ): AgentEnrollmentValidation {
-  if ("permissions" in search || "permission" in search || "type" in search) {
-    return invalid("malformed", "This enrollment link contains an unsupported field.");
+  const checked = checkEnrollmentLink(search, {
+    standard: AGENT_ENROLLMENT_VERSION,
+    channel: AGENT_ENROLLMENT_CHANNEL_VERSION,
+  });
+  if ("issues" in checked) {
+    return malformedLink(malformedLinkMessage("agent enrollment", checked.issues), checked.issues);
   }
 
-  const v = singleString(search.v);
-  const publicKey = singleString(search.publicKey);
-  const name = singleString(search.name);
-  const description = singleString(search.description);
-  const source = singleString(search.source);
-  const expiresAt = singleString(search.expiresAt);
-  const channelEnvironment = singleString(search.channelEnvironment);
-  const channelHost = singleString(search.channelHost);
-  const signature = singleString(search.signature);
-  const channelVersion = v === AGENT_ENROLLMENT_CHANNEL_VERSION;
-
-  if (
-    (v !== AGENT_ENROLLMENT_VERSION && !channelVersion) ||
-    !publicKey ||
-    !name ||
-    name.trim().length === 0 ||
-    name.length > 80 ||
-    !description ||
-    description.trim().length === 0 ||
-    description.length > 280 ||
-    !source ||
-    !expiresAt ||
-    !signature ||
-    !isPublicKey(publicKey) ||
-    !isCompactSignature(signature) ||
-    (channelVersion &&
-      (!isEnrollmentEnvironment(channelEnvironment) || !isCompressedPublicKey(channelHost))) ||
-    (!channelVersion && (channelEnvironment !== undefined || channelHost !== undefined))
-  ) {
-    return invalid("malformed", "This agent enrollment link is malformed or incomplete.");
-  }
+  const { publicKey, name, description, source, expiresAt, signature, channel } = checked.fields;
   if (!isAgentSource(source)) {
     return invalid("unsupported-source", "This agent source is not supported.");
   }
   const expiration = Date.parse(expiresAt);
   if (!Number.isFinite(expiration)) {
-    return invalid("malformed", "The enrollment expiry is invalid.");
+    return malformedLink("The enrollment expiry is invalid.", [
+      { field: "expiresAt", problem: "invalid-value" },
+    ]);
   }
   if (expiration <= now.getTime()) {
     return invalid("expired", "This agent enrollment link has expired.");
   }
 
-  const common = {
-    publicKey: publicKey.toLowerCase(),
-    name,
-    description,
-    source,
-    expiresAt,
-    signature: signature.toLowerCase(),
-  };
-  const request: AgentEnrollmentRequest = channelVersion
-    ? {
-        version: AGENT_ENROLLMENT_CHANNEL_VERSION,
-        ...common,
-        channel: {
-          environment: channelEnvironment as AgentEnrollmentChannelBinding["environment"],
-          hostPublicKey: (channelHost as string).toLowerCase(),
-        },
-      }
+  const common = { publicKey, name, description, source, expiresAt, signature };
+  const request: AgentEnrollmentRequest = channel
+    ? { version: AGENT_ENROLLMENT_CHANNEL_VERSION, ...common, channel }
     : { version: AGENT_ENROLLMENT_VERSION, ...common };
   try {
     const verified = secp256k1.verify(
@@ -261,7 +223,7 @@ function assertEnrollmentFields(request: UnsignedAgentEnrollmentRequest): void {
 }
 
 function invalid(
-  reason: Extract<AgentEnrollmentValidation, { status: "invalid" }>["reason"],
+  reason: Exclude<Extract<AgentEnrollmentValidation, { status: "invalid" }>["reason"], "malformed">,
   message: string,
 ): AgentEnrollmentValidation {
   return { status: "invalid", reason, message };

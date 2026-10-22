@@ -9,13 +9,7 @@ import {
   type AgentSource,
 } from "./enrollment.ts";
 import { SIGNATURE_COMPACT, sha256Digest, type AgentIdentity } from "./identity.ts";
-import {
-  isCompactSignature,
-  isCompressedPublicKey,
-  isEnrollmentEnvironment,
-  isPublicKey,
-  singleString,
-} from "./requestFields.ts";
+import { checkRecoveryLink, malformedLink, malformedLinkMessage } from "./requestFields.ts";
 
 export const AGENT_RECOVERY_VERSION = "3";
 export const AGENT_RECOVERY_COMPLETION_VERSION = 3;
@@ -77,19 +71,6 @@ export type AgentRecoveryValidation =
 type UncheckedAgentRecoveryRequest = Omit<AgentRecoveryRequest, "source"> & { source: string };
 
 const encoder = new TextEncoder();
-const SEARCH_FIELDS = [
-  "channelEnvironment",
-  "channelHost",
-  "description",
-  "expiresAt",
-  "name",
-  "previousTrustchainId",
-  "publicKey",
-  "recovery",
-  "signature",
-  "source",
-  "v",
-];
 
 export function isAgentRecoverySource(value: unknown): value is AgentRecoverySource {
   return isAgentSource(value);
@@ -190,18 +171,41 @@ export function validateAgentRecovery(
   search: Record<string, unknown>,
   now = new Date(),
 ): AgentRecoveryValidation {
-  const unchecked = recoveryRequestFromSearch(search);
-  if (!unchecked) {
-    return invalid("malformed", "This agent recovery link is malformed or incomplete.");
+  const checked = checkRecoveryLink(search, AGENT_RECOVERY_VERSION);
+  if ("issues" in checked) {
+    return malformedLink(malformedLinkMessage("agent recovery", checked.issues), checked.issues);
   }
-  const { source } = unchecked;
+  const {
+    publicKey,
+    name,
+    description,
+    source,
+    previousTrustchainId,
+    expiresAt,
+    channel,
+    signature,
+  } = checked.fields;
+  const unchecked: UncheckedAgentRecoveryRequest = {
+    version: AGENT_RECOVERY_VERSION,
+    recovery: true,
+    publicKey,
+    name,
+    description,
+    source,
+    previousTrustchainId,
+    expiresAt,
+    ...(channel ? { channel } : {}),
+    signature,
+  };
   if (!isAgentRecoverySource(source)) {
     return invalid("unsupported-source", "This agent source is not supported.");
   }
   const request: AgentRecoveryRequest = { ...unchecked, source };
   const expiration = Date.parse(request.expiresAt);
   if (!Number.isFinite(expiration)) {
-    return invalid("malformed", "The agent recovery expiry is invalid.");
+    return malformedLink("The agent recovery expiry is invalid.", [
+      { field: "expiresAt", problem: "invalid-value" },
+    ]);
   }
   if (expiration <= now.getTime()) {
     return invalid("expired", "This agent recovery link has expired.");
@@ -299,64 +303,6 @@ export function parseAgentRecoveryCompletion(
   return completion as AgentRecoveryCompletion;
 }
 
-function recoveryRequestFromSearch(
-  search: Record<string, unknown>,
-): UncheckedAgentRecoveryRequest | undefined {
-  if (Object.keys(search).some((key) => !SEARCH_FIELDS.includes(key))) return undefined;
-  const v = singleString(search.v);
-  const recovery = singleString(search.recovery);
-  const publicKey = singleString(search.publicKey);
-  const name = singleString(search.name);
-  const description = singleString(search.description);
-  const source = singleString(search.source);
-  const previousTrustchainId = singleString(search.previousTrustchainId);
-  const expiresAt = singleString(search.expiresAt);
-  const channelEnvironment = singleString(search.channelEnvironment);
-  const channelHost = singleString(search.channelHost);
-  const signature = singleString(search.signature);
-  const hasChannel = channelEnvironment !== undefined || channelHost !== undefined;
-  if (
-    v !== AGENT_RECOVERY_VERSION ||
-    recovery !== "true" ||
-    !publicKey ||
-    !isPublicKey(publicKey) ||
-    !name ||
-    !name.trim() ||
-    name.length > 80 ||
-    !description ||
-    !description.trim() ||
-    description.length > 280 ||
-    !source ||
-    !previousTrustchainId ||
-    !expiresAt ||
-    !signature ||
-    !isCompactSignature(signature) ||
-    (hasChannel &&
-      (!isEnrollmentEnvironment(channelEnvironment) || !isCompressedPublicKey(channelHost)))
-  ) {
-    return undefined;
-  }
-  return {
-    version: v,
-    recovery: true,
-    publicKey: publicKey.toLowerCase(),
-    name,
-    description,
-    source,
-    previousTrustchainId,
-    expiresAt,
-    ...(hasChannel
-      ? {
-          channel: {
-            environment: channelEnvironment as AgentEnrollmentChannelBinding["environment"],
-            hostPublicKey: (channelHost as string).toLowerCase(),
-          },
-        }
-      : {}),
-    signature: signature.toLowerCase(),
-  };
-}
-
 function assertRecoveryFields(request: Omit<AgentRecoveryRequest, "signature">): void {
   // Also rejects unsupported sources passed by untyped JavaScript callers.
   const validation = validateAgentRecovery(
@@ -385,7 +331,7 @@ function malformedCompletion(): AgentIntentSdkError {
 }
 
 function invalid(
-  reason: Extract<AgentRecoveryValidation, { status: "invalid" }>["reason"],
+  reason: Exclude<Extract<AgentRecoveryValidation, { status: "invalid" }>["reason"], "malformed">,
   message: string,
 ): AgentRecoveryValidation {
   return { status: "invalid", reason, message };
