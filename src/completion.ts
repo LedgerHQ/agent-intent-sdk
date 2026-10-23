@@ -1,4 +1,5 @@
 import { AgentIntentSdkError } from "./bytes.ts";
+import { isEnrollmentEnvironment } from "./requestFields.ts";
 
 export const AGENT_ENROLLMENT_COMPLETION_VERSION = 1;
 export const AGENT_ENROLLMENT_WITH_ACCOUNT_ACCESS_VERSION = 2;
@@ -112,9 +113,7 @@ function assertAccountAccess(value: unknown): asserts value is DirectApp16Accoun
     Array.isArray(value) ||
     Object.keys(value).sort().join(",") !== "applicationPath,environment,mode,trustchainId" ||
     (value as DirectApp16AccountAccessCompletion).mode !== "direct-app16-key-reader" ||
-    !["staging", "production"].includes(
-      (value as DirectApp16AccountAccessCompletion).environment,
-    ) ||
+    !isEnrollmentEnvironment((value as DirectApp16AccountAccessCompletion).environment) ||
     typeof (value as DirectApp16AccountAccessCompletion).trustchainId !== "string" ||
     !(value as DirectApp16AccountAccessCompletion).trustchainId ||
     typeof (value as DirectApp16AccountAccessCompletion).applicationPath !== "string" ||
