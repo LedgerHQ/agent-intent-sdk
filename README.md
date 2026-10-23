@@ -193,14 +193,15 @@ if (validation.status === "invalid" && validation.reason === "malformed") {
 A field can be `missing`, `repeated` (the link was pasted twice), `empty`,
 `truncated` or followed by `extra-characters` (hex fields), `too-long` (name and
 description), have an `invalid-value`, carry an `unsupported-version`, or be
-`unexpected`. `message` describes the first issue. `issues` only explains a
-rejection and never changes which links are accepted, so two problems that do
-not reject a link on their own, an unreadable `expiresAt` and a repeated channel
-field on a link without a channel, are listed only when something else already
-rejects it. The `field` of an `unexpected` issue is the parameter name as the
-link carried it: treat it as untrusted text and don't show it as is.
-`AGENT_NAME_MAX_LENGTH`, `AGENT_DESCRIPTION_MAX_LENGTH` and
-`AGENT_LINK_HEX_LENGTHS` export the limits the validators apply.
+`unexpected`. `message` describes the first issue, and unexpected parameters
+come after every other problem. `issues` only explains a rejection and never
+changes which links are accepted, so two problems that do not reject a link on
+their own, an unreadable `expiresAt` and a repeated channel field on a link
+without a channel, are listed only when something else already rejects it. An
+`unexpected` issue has a `parameter` instead of a `field`: it is the name as the
+link carried it, so treat it as untrusted text and don't show it as is.
+`AGENT_NAME_MAX_LENGTH` and `AGENT_DESCRIPTION_MAX_LENGTH` export the name and
+description limits the validators apply.
 
 ## Encrypted enrollment completion
 

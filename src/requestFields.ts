@@ -2,11 +2,11 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 
 export const AGENT_NAME_MAX_LENGTH = 80;
 export const AGENT_DESCRIPTION_MAX_LENGTH = 280;
-export const AGENT_LINK_HEX_LENGTHS = Object.freeze({
-  publicKey: Object.freeze([66, 130] as const),
-  signature: Object.freeze([128] as const),
-  channelHost: Object.freeze([66] as const),
-});
+const AGENT_LINK_HEX_LENGTHS = {
+  publicKey: [66, 130],
+  signature: [128],
+  channelHost: [66],
+} as const;
 
 const AGENT_LINK_FIELDS = [
   "v",
@@ -24,20 +24,20 @@ const AGENT_LINK_FIELDS = [
 
 export type AgentLinkField = (typeof AGENT_LINK_FIELDS)[number];
 
-export type AgentLinkHexField = keyof typeof AGENT_LINK_HEX_LENGTHS;
+type AgentLinkHexField = keyof typeof AGENT_LINK_HEX_LENGTHS;
 
 export type AgentLinkIssue =
   | { field: AgentLinkField; problem: "missing" | "repeated" | "empty" | "invalid-value" }
   | { field: AgentLinkHexField; problem: "truncated" | "extra-characters"; expectedLength: number }
   | { field: "name" | "description"; problem: "too-long"; limit: number }
   | { field: "v"; problem: "unsupported-version" }
-  | { field: string; problem: "unexpected" };
+  | { problem: "unexpected"; parameter: string };
 
 export type MalformedAgentLink = {
   status: "invalid";
   reason: "malformed";
   message: string;
-  issues: AgentLinkIssue[];
+  issues: AgentLinkIssues;
 };
 
 type AgentLinkIssues = [AgentLinkIssue, ...AgentLinkIssue[]];
@@ -60,7 +60,7 @@ const HEX = /^[0-9a-f]+$/i;
 const HEX_OR_EMPTY = /^[0-9a-f]*$/i;
 const NON_HEX = /[^0-9a-f]/i;
 const ELLIPSIS = /…|\.{2,}/g;
-const TRAILING_PUNCTUATION = /[\s.,;:!?'")\]}>]+$/;
+const TRAILING_PUNCTUATION = /[\s.,;:!?'")\]}>]/;
 const UNCOMPRESSED_PUBLIC_KEY_LENGTH = AGENT_LINK_HEX_LENGTHS.publicKey[1];
 const CHANNEL_FIELDS: readonly ChannelField[] = ["channelEnvironment", "channelHost"];
 const UNSUPPORTED_ENROLLMENT_FIELDS = ["permissions", "permission", "type"];
@@ -71,7 +71,6 @@ export function checkEnrollmentLink(
 ): AgentLinkCheck<AgentLinkFields> {
   const bound = search.v === versions.channel;
   const issues = linkIssues((rejected) => [
-    ...UNSUPPORTED_ENROLLMENT_FIELDS.filter((field) => field in search).map(unexpected),
     versionIssue(search.v, [versions.standard, versions.channel]),
     ...metadataIssues(search),
     expiryIssue(search.expiresAt, rejected),
@@ -79,6 +78,7 @@ export function checkEnrollmentLink(
       ? boundChannelIssues(search)
       : unboundChannelIssues(search, search.v === versions.standard, rejected)),
     hexIssue("signature", search.signature),
+    ...UNSUPPORTED_ENROLLMENT_FIELDS.filter((field) => field in search).map(unexpected),
   ]);
   return linkCheck(issues, () => linkFields(search, bound));
 }
@@ -107,7 +107,7 @@ export function checkRecoveryLink(
   }));
 }
 
-export function malformedLink(message: string, issues: AgentLinkIssue[]): MalformedAgentLink {
+export function malformedLink(message: string, issues: AgentLinkIssues): MalformedAgentLink {
   return { status: "invalid", reason: "malformed", message, issues };
 }
 
@@ -120,6 +120,7 @@ export function isEnrollmentEnvironment(value: unknown): value is "staging" | "p
 }
 
 function describeIssue(issue: AgentLinkIssue): string {
+  if (issue.problem === "unexpected") return "it contains a parameter that is not supported";
   const field = `"${issue.field}"`;
   switch (issue.problem) {
     case "missing":
@@ -138,8 +139,6 @@ function describeIssue(issue: AgentLinkIssue): string {
       return `${field} is longer than ${issue.limit} characters`;
     case "unsupported-version":
       return "its version is not supported";
-    case "unexpected":
-      return "it contains a parameter that is not supported";
   }
 }
 
@@ -240,10 +239,16 @@ function hexIssue(field: AgentLinkHexField, value: unknown): AgentLinkIssue | un
   if ((firstNonHex === -1 ? hex.length : firstNonHex) >= expectedLength) {
     return { field, problem: "extra-characters", expectedLength };
   }
-  const digits = hex.replace(ELLIPSIS, "").replace(TRAILING_PUNCTUATION, "");
+  const digits = withoutTrailingPunctuation(hex.replace(ELLIPSIS, ""));
   if (!HEX_OR_EMPTY.test(digits)) return invalidValue(field);
   const problem = digits.length < expectedLength ? "truncated" : "extra-characters";
   return { field, problem, expectedLength };
+}
+
+function withoutTrailingPunctuation(value: string): string {
+  let end = value.length;
+  while (end > 0 && TRAILING_PUNCTUATION.test(value.charAt(end - 1))) end--;
+  return value.slice(0, end);
 }
 
 function boundChannelIssues(search: Record<string, unknown>): (AgentLinkIssue | undefined)[] {
@@ -272,8 +277,8 @@ function invalidValue(field: AgentLinkField): AgentLinkIssue {
   return { field, problem: "invalid-value" };
 }
 
-function unexpected(field: string): AgentLinkIssue {
-  return { field, problem: "unexpected" };
+function unexpected(parameter: string): AgentLinkIssue {
+  return { problem: "unexpected", parameter };
 }
 
 function definedIssues(issues: (AgentLinkIssue | undefined)[]): AgentLinkIssue[] {

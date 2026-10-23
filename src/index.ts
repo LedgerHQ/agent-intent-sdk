@@ -22,10 +22,8 @@ export * from "./intents.ts";
 export * from "./recovery.ts";
 export {
   AGENT_DESCRIPTION_MAX_LENGTH,
-  AGENT_LINK_HEX_LENGTHS,
   AGENT_NAME_MAX_LENGTH,
   type AgentLinkField,
-  type AgentLinkHexField,
   type AgentLinkIssue,
   type MalformedAgentLink,
 } from "./requestFields.ts";

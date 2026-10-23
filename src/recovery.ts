@@ -9,7 +9,12 @@ import {
   type AgentSource,
 } from "./enrollment.ts";
 import { SIGNATURE_COMPACT, sha256Digest, type AgentIdentity } from "./identity.ts";
-import { checkRecoveryLink, malformedLink, malformedLinkMessage } from "./requestFields.ts";
+import {
+  checkRecoveryLink,
+  malformedLink,
+  malformedLinkMessage,
+  type AgentLinkIssue,
+} from "./requestFields.ts";
 
 export const AGENT_RECOVERY_VERSION = "3";
 export const AGENT_RECOVERY_COMPLETION_VERSION = 3;
@@ -175,37 +180,20 @@ export function validateAgentRecovery(
   if ("issues" in checked) {
     return malformedLink(malformedLinkMessage("agent recovery", checked.issues), checked.issues);
   }
-  const {
-    publicKey,
-    name,
-    description,
-    source,
-    previousTrustchainId,
-    expiresAt,
-    channel,
-    signature,
-  } = checked.fields;
   const unchecked: UncheckedAgentRecoveryRequest = {
     version: AGENT_RECOVERY_VERSION,
     recovery: true,
-    publicKey,
-    name,
-    description,
-    source,
-    previousTrustchainId,
-    expiresAt,
-    ...(channel ? { channel } : {}),
-    signature,
+    ...checked.fields,
   };
+  const { source } = unchecked;
   if (!isAgentRecoverySource(source)) {
     return invalid("unsupported-source", "This agent source is not supported.");
   }
   const request: AgentRecoveryRequest = { ...unchecked, source };
   const expiration = Date.parse(request.expiresAt);
   if (!Number.isFinite(expiration)) {
-    return malformedLink("The agent recovery expiry is invalid.", [
-      { field: "expiresAt", problem: "invalid-value" },
-    ]);
+    const issues: [AgentLinkIssue] = [{ field: "expiresAt", problem: "invalid-value" }];
+    return malformedLink(malformedLinkMessage("agent recovery", issues), issues);
   }
   if (expiration <= now.getTime()) {
     return invalid("expired", "This agent recovery link has expired.");

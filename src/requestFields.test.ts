@@ -88,6 +88,18 @@ describe("malformed link issues", () => {
     ]);
   });
 
+  it("reads a long run of trailing spaces in linear time", () => {
+    const started = performance.now();
+
+    expect(
+      enrollmentIssues({
+        ...channelLink,
+        signature: `${signature.slice(0, 64)}${" ".repeat(100_000)}g`,
+      }),
+    ).toEqual([{ field: "signature", problem: "invalid-value" }]);
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+
   it("reports a hex field with non-hex characters as an invalid value, not a cut", () => {
     const invalidSignature = [{ field: "signature", problem: "invalid-value" }];
 
@@ -207,27 +219,30 @@ describe("malformed link issues", () => {
         channelHost: hostPublicKey,
       }),
     ).toEqual([
-      { field: "channelEnvironment", problem: "unexpected" },
-      { field: "channelHost", problem: "unexpected" },
+      { problem: "unexpected", parameter: "channelEnvironment" },
+      { problem: "unexpected", parameter: "channelHost" },
     ]);
   });
 
-  it("reports unsupported enrollment fields together with the other problems", () => {
+  it("reports unsupported enrollment fields after the other problems, as recovery does", () => {
     expect(validateAgentEnrollment({ ...standardLink, permissions: "all", name: "" }, NOW)).toEqual(
       {
         status: "invalid",
         reason: "malformed",
-        message:
-          "This agent enrollment link is malformed: it contains a parameter that is not supported.",
+        message: 'This agent enrollment link is malformed: "name" is empty.',
         issues: [
-          { field: "permissions", problem: "unexpected" },
           { field: "name", problem: "empty" },
+          { problem: "unexpected", parameter: "permissions" },
         ],
       },
     );
+    expect(recoveryIssues({ ...recoveryLink, utm_source: "telegram", name: "" })).toEqual([
+      { field: "name", problem: "empty" },
+      { problem: "unexpected", parameter: "utm_source" },
+    ]);
   });
 
-  it("lists an unreadable expiry with the other problems, and alone keeps its own result", () => {
+  it("lists an unreadable expiry with the other problems, and names it when alone", () => {
     expect(
       enrollmentIssues({ ...standardLink, expiresAt: "soon", signature: signature.slice(0, 100) }),
     ).toEqual([
@@ -237,8 +252,11 @@ describe("malformed link issues", () => {
     expect(validateAgentEnrollment({ ...standardLink, expiresAt: "soon" }, NOW)).toEqual({
       status: "invalid",
       reason: "malformed",
-      message: "The enrollment expiry is invalid.",
+      message: 'This agent enrollment link is malformed: "expiresAt" has an invalid value.',
       issues: [{ field: "expiresAt", problem: "invalid-value" }],
+    });
+    expect(validateAgentRecovery({ ...recoveryLink, expiresAt: "soon" }, NOW)).toMatchObject({
+      message: 'This agent recovery link is malformed: "expiresAt" has an invalid value.',
     });
     expect(
       validateAgentEnrollment({ ...standardLink, expiresAt: "soon", source: "trading" }, NOW),
@@ -268,13 +286,13 @@ describe("malformed link issues", () => {
       reason: "malformed",
       message:
         "This agent recovery link is malformed: it contains a parameter that is not supported.",
-      issues: [{ field: injected, problem: "unexpected" }],
+      issues: [{ problem: "unexpected", parameter: injected }],
     });
   });
 
   it("reports recovery links with an unknown parameter, a wrong marker or half a channel", () => {
     expect(recoveryIssues({ ...recoveryLink, utm_source: "telegram" })).toEqual([
-      { field: "utm_source", problem: "unexpected" },
+      { problem: "unexpected", parameter: "utm_source" },
     ]);
     expect(recoveryIssues({ ...recoveryLink, recovery: "false" })).toEqual([
       { field: "recovery", problem: "invalid-value" },

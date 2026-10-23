@@ -5,6 +5,7 @@ import {
   checkEnrollmentLink,
   malformedLink,
   malformedLinkMessage,
+  type AgentLinkIssue,
   type MalformedAgentLink,
 } from "./requestFields.ts";
 
@@ -183,9 +184,8 @@ export function validateAgentEnrollment(
   }
   const expiration = Date.parse(expiresAt);
   if (!Number.isFinite(expiration)) {
-    return malformedLink("The enrollment expiry is invalid.", [
-      { field: "expiresAt", problem: "invalid-value" },
-    ]);
+    const issues: [AgentLinkIssue] = [{ field: "expiresAt", problem: "invalid-value" }];
+    return malformedLink(malformedLinkMessage("agent enrollment", issues), issues);
   }
   if (expiration <= now.getTime()) {
     return invalid("expired", "This agent enrollment link has expired.");
