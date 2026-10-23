@@ -32,6 +32,17 @@ export const AGENT_INTENT_FRONTEND_URLS: Record<AgentIntentEnvironment, string> 
   production: "https://app.agents.ledger.com/",
 };
 
+export function buildAgentSetupPrompt(appUrl: string): string {
+  return `Use Ledger wallet-cli (npm package @ledgerhq/wallet-cli) and its agent skill with \`wallet-cli skill install\`, then follow the skill's Agent Intent section to enroll an agent with the app at ${promptAppUrl(appUrl)}.`;
+}
+
+function promptAppUrl(appUrl: string): string {
+  const url = new URL(appUrl);
+  if (url.protocol === "https:") return url.host;
+  if (url.protocol === "http:") return url.origin;
+  throw new AgentIntentSdkError(`The Agent Intent app URL must be http(s), got "${appUrl}".`);
+}
+
 export class AgentIntentHttpError extends AgentIntentSdkError {
   readonly status: number;
   readonly type: string | undefined;
