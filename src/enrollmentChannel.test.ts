@@ -1000,6 +1000,28 @@ describe("encrypted enrollment channel", () => {
     expect(packageExports).not.toHaveProperty("enrollmentChannelCryptoVectors");
   });
 
+  it("reports the relay's own Failure before checking the host key", async () => {
+    const relay = new TestRelay();
+    const agent = createSoftwareAgentIdentity();
+    const host = createAgentEnrollmentChannelHost({
+      environment: "production",
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+    });
+    const request = channelRequest(agent, host.binding);
+    const candidate = createAgentEnrollmentChannelCandidate({
+      request,
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+    });
+
+    // The relay answers a candidate that has no host with its own unencrypted Failure.
+    const connecting = candidate.connect();
+    relay.sockets[0]?.emit("message", { data: JSON.stringify(relayFailure()) });
+    await expect(connecting).rejects.toThrow("The enrollment relay rejected the session.");
+    expect(relay.sockets[0]?.closed).toBe(true);
+  });
+
   describe("host reconnect", () => {
     const LIMIT_MESSAGE =
       "Enrollment relay closed before completion was acknowledged; the host stopped reconnecting after 5 attempts.";
@@ -1234,7 +1256,7 @@ describe("encrypted enrollment channel", () => {
 
       // The relay has not closed the host yet, so this candidate finds the channel without one.
       const second = setup.candidate();
-      await expect(second.connect()).rejects.toThrow();
+      await expect(second.connect()).rejects.toThrow("The enrollment relay rejected the session.");
       await vi.advanceTimersByTimeAsync(setup.relay.peerCloseDelayMs);
       expect(setup.relay.hostSockets).toHaveLength(2);
 
