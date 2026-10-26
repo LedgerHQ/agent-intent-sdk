@@ -35,7 +35,7 @@ const RELAY_KEEPALIVE_PONG = "pong";
 // The relay closes the host socket once its candidate leaves. The host reopens on the same key
 // up to a limit of quick reconnects; a socket that stayed open long enough resets the count.
 // A reopened socket that fails before it connects is retried until reopening has failed for
-// a minute.
+// a minute. Both windows use the monotonic clock, so a wall-clock change does not move them.
 const HOST_RECONNECT_LIMIT = 5;
 const HOST_RECONNECT_STABLE_MS = 60_000;
 const HOST_RECONNECT_RETRY_DELAYS_MS = [1_000, 2_000, 4_000] as const;
@@ -333,8 +333,8 @@ function runHost(
     armCandidateTimer();
     const failedOpen = () => {
       failedOpens += 1;
-      failedOpenSince ??= Date.now();
-      if (Date.now() - failedOpenSince >= HOST_RECONNECT_GIVE_UP_MS) {
+      failedOpenSince ??= performance.now();
+      if (performance.now() - failedOpenSince >= HOST_RECONNECT_GIVE_UP_MS) {
         fail(
           channelError(
             `Enrollment relay closed before completion was acknowledged; the host could not reopen its relay connection for ${HOST_RECONNECT_GIVE_UP_MS / 1_000} seconds.`,
@@ -349,6 +349,11 @@ function runHost(
     };
     const openReconnect = () => {
       if (settled) return;
+      // Timers stop while a laptop sleeps, so the wall clock decides whether the request expired.
+      if (Date.parse(request.expiresAt) <= Date.now()) {
+        fail(channelError("Enrollment completion timed out."));
+        return;
+      }
       let source: EnrollmentChannelWebSocket | undefined;
       try {
         source = openSocket();
@@ -385,7 +390,7 @@ function runHost(
           fail(channelError(message));
           return;
         }
-        if (Date.now() - openedAt >= HOST_RECONNECT_STABLE_MS) reconnects = 0;
+        if (performance.now() - openedAt >= HOST_RECONNECT_STABLE_MS) reconnects = 0;
         if (reconnects >= HOST_RECONNECT_LIMIT) {
           fail(
             channelError(
@@ -400,7 +405,7 @@ function runHost(
       };
       source.addEventListener("open", () => {
         opened = true;
-        openedAt = Date.now();
+        openedAt = performance.now();
         if (reopened) {
           failedOpens = 0;
           failedOpenSince = undefined;
