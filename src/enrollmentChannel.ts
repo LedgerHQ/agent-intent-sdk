@@ -258,6 +258,9 @@ function runHost(
     let stopKeepAlive: () => void = () => undefined;
     let messageQueue = Promise.resolve();
     let socket = initialSocket;
+    // Set once the session resolves or fails; a handler resuming after an await can still
+    // move `state`, so reconnects and timers check this instead.
+    let settled = false;
     let reconnects = 0;
     let failedOpens = 0;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -265,8 +268,9 @@ function runHost(
     const fail = failChannel(
       () => socket.close(),
       reject,
-      () => state === "finished",
+      () => settled,
       () => {
+        settled = true;
         state = "finished";
         clearTimeout(phaseTimer);
         clearTimeout(completionTimer);
@@ -290,7 +294,7 @@ function runHost(
       fail(channelError("Enrollment completion timed out.")),
     );
     const resetCandidate = () => {
-      if (state === "finished") return;
+      if (settled) return;
       clearTimeout(phaseTimer);
       state = "connected";
       peer = "";
@@ -334,7 +338,7 @@ function runHost(
       );
     };
     const openReconnect = () => {
-      if (state === "finished") return;
+      if (settled) return;
       let source: EnrollmentChannelWebSocket | undefined;
       try {
         source = openSocket();
@@ -350,7 +354,7 @@ function runHost(
       }
     };
     const reconnect = () => {
-      if (state === "finished") return;
+      if (settled) return;
       // A drop before any candidate keeps the running wait for the first one.
       if (state !== "connected") resetCandidate();
       openReconnect();
@@ -359,7 +363,7 @@ function runHost(
       let opened = false;
       let lost = false;
       const onLost = (message: string) => {
-        if (lost || source !== socket || state === "finished") return;
+        if (lost || source !== socket || settled) return;
         lost = true;
         stopKeepAlive();
         if (!opened && reopened) {
@@ -385,7 +389,7 @@ function runHost(
       source.addEventListener("open", () => {
         opened = true;
         if (reopened) failedOpens = 0;
-        if (source === socket && state !== "finished") stopKeepAlive = keepRelayAlive(source);
+        if (source === socket && !settled) stopKeepAlive = keepRelayAlive(source);
       });
       source.addEventListener("error", () => onLost("Enrollment relay connection failed."));
       source.addEventListener("close", () =>
@@ -402,7 +406,7 @@ function runHost(
       messageQueue = messageQueue
         .then(async () => {
           // A frame queued before the relay dropped its socket would answer a candidate that left.
-          if (lost()) return;
+          if (lost() || settled) return;
           const envelope = parseEnvelope(data);
           if (envelope.message === "Failure")
             throw channelError("The enrollment relay rejected the session.");
@@ -448,6 +452,7 @@ function runHost(
               request,
               {},
             );
+            if (settled) return;
             clearTimeout(phaseTimer);
             state = "authenticated";
             return;
@@ -470,6 +475,7 @@ function runHost(
               await rejectCandidate(error);
               return;
             }
+            if (settled) return;
             state = "persisting";
             await withinDeadline(
               () => persist(completion),
@@ -488,6 +494,7 @@ function runHost(
                 digest: completionDigest(serialized),
               },
             );
+            settled = true;
             state = "finished";
             clearTimeout(completionTimer);
             clearTimeout(phaseTimer);

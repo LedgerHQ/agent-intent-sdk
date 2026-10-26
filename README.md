@@ -258,12 +258,15 @@ acknowledgement timed out, `deliver()` may be retried on the same candidate. Eac
 retry opens a fresh session with a new ephemeral key. A retry fails once the host
 has finished, closed, timed out, or stopped reconnecting.
 
-The Trustchain relay runs a channel as one host and one candidate: it refuses a
-third socket and, when either side leaves, closes the other about a second later.
-Until a completion is being authenticated, the host then reopens its socket on
-the same key at once, so a reviewer who leaves the page can come back while the
-request is unexpired. A candidate that connects in the second before the host is
-back is rejected by the relay; retrying `connect()` or `deliver()` succeeds.
+As observed (this is not a documented relay contract), the Trustchain relay runs
+a channel as one host and one candidate: it refuses a third socket and, when
+either side leaves, closes the other about a second later. Except while a
+completion is being authenticated or persisted, the host then reopens its socket
+on the same key at once, so a reviewer who leaves the page can come back while
+the request is unexpired. A candidate that connects in the second or two before
+the host is back is rejected by the relay with "The enrollment relay rejected the
+session."; a `connect()` or `deliver()` retry a couple of seconds later succeeds
+once the host has reconnected.
 
 ### Recovery
 
