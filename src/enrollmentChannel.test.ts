@@ -1185,12 +1185,260 @@ describe("encrypted enrollment channel", () => {
     it("counts a handshake timeout toward the session limit", async () => {
       const setup = pairedHost({ ...reconnectTimeouts(), handshakeTimeoutMs: 30_000 });
       const { waiting } = setup.start();
-      for (let round = 0; round < 5; round += 1) await setup.leave();
+      for (let round = 0; round < 4; round += 1) await setup.leave();
 
       await silentCandidate(setup);
       await vi.advanceTimersByTimeAsync(30_000);
-      await expect(waiting).rejects.toMatchObject({ message: LIMIT_MESSAGE });
       expect(setup.relay.hostSockets).toHaveLength(6);
+      await vi.advanceTimersByTimeAsync(setup.relay.peerCloseDelayMs);
+      await setup.leave();
+      await expect(waiting).rejects.toMatchObject({ message: LIMIT_MESSAGE });
+    });
+
+    it("re-arms the candidate wait after a handshake timeout", async () => {
+      const setup = pairedHost({
+        ...reconnectTimeouts(),
+        handshakeTimeoutMs: 30_000,
+        candidateTimeoutMs: 10_000,
+      });
+      const { waiting, isSettled } = setup.start();
+
+      await silentCandidate(setup);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(setup.relay.hostSockets).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(10_000 - 1);
+      expect(isSettled()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(waiting).rejects.toThrow(/waiting for the frontend candidate/);
+    });
+
+    it("measures the stable window from the reconnect socket's open, not the drop before it", async () => {
+      const setup = pairedHost();
+      const { waiting } = setup.start();
+      for (let round = 0; round < 4; round += 1) await setup.leave();
+      // The fifth reconnect fails at 0, 1 and 3 s and opens at 7 s.
+      setup.relay.refuseNextSockets = 3;
+      await setup.leave();
+      await vi.advanceTimersByTimeAsync(7_000);
+      expect(setup.relay.hostSockets).toHaveLength(9);
+      expect(setup.relay.hostSockets[8]?.closed).toBe(false);
+
+      // Open for 55 s, 62 s after the drop that started the reconnect.
+      await vi.advanceTimersByTimeAsync(55_000);
+      setup.relay.hostSockets[8]?.close();
+      await expect(waiting).rejects.toMatchObject({ message: LIMIT_MESSAGE });
+    });
+
+    it("measures the stable window from the open event, not from socket creation", async () => {
+      let created = 0;
+      const setup = pairedHost(reconnectTimeouts(), (factory) => (url) => {
+        created += 1;
+        const socket = factory(url) as TestSocket;
+        if (created === 6) {
+          // This socket reports open 7 s after it was created.
+          const add = socket.addEventListener.bind(socket);
+          socket.addEventListener = (
+            type: "open" | "message" | "error" | "close",
+            listener: never,
+          ) => add(type, (type === "open" ? () => setTimeout(listener, 7_000) : listener) as never);
+        }
+        return socket;
+      });
+      const { waiting } = setup.start();
+      for (let round = 0; round < 5; round += 1) await setup.leave();
+
+      await vi.advanceTimersByTimeAsync(7_000 + 55_000);
+      setup.relay.hostSockets[5]?.close();
+      await expect(waiting).rejects.toMatchObject({ message: LIMIT_MESSAGE });
+    });
+
+    it("does not reset the session count on a failed open", async () => {
+      const setup = pairedHost();
+      const { waiting } = setup.start();
+      // Past 60 s on the monotonic clock, a socket that never opened must still not reset the count.
+      await vi.advanceTimersByTimeAsync(60_000);
+      for (let round = 0; round < 3; round += 1) await setup.leave();
+      setup.relay.refuseNextSockets = 1;
+      await setup.leave();
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await setup.leave();
+      await setup.leave();
+      await expect(waiting).rejects.toMatchObject({ message: LIMIT_MESSAGE });
+    });
+
+    it.each([
+      { lastFailureMs: 59_999, givesUp: false },
+      { lastFailureMs: 60_000, givesUp: true },
+    ])(
+      "gives up on a failed open $lastFailureMs ms into the streak: $givesUp",
+      async ({ lastFailureMs, givesUp }) => {
+        const setup = pairedHost();
+        const { waiting, isSettled } = setup.start();
+        setup.relay.refuseNextSockets = 2;
+        await setup.leave();
+
+        // The retry at 1 s hangs until lastFailureMs, then fails.
+        setup.relay.refuseDelayMs = lastFailureMs - 1_000;
+        await vi.advanceTimersByTimeAsync(lastFailureMs);
+        if (givesUp) {
+          await expect(waiting).rejects.toMatchObject({ message: FAILED_OPENS_MESSAGE });
+        } else {
+          expect(isSettled()).toBe(false);
+          await vi.advanceTimersByTimeAsync(4_000);
+          expect(setup.relay.hostSockets).toHaveLength(4);
+          expect(setup.relay.hostSockets[3]?.closed).toBe(false);
+        }
+      },
+    );
+
+    it("starts the give-up window at the first failure, not the first attempt", async () => {
+      const setup = pairedHost();
+      const { waiting, isSettled } = setup.start();
+      setup.relay.refuseNextSockets = 99;
+      setup.relay.refuseDelayMs = 10_000;
+      await setup.leave();
+      setup.relay.refuseDelayMs = 0;
+
+      // Fails at 10 s, then at 11, 13, 17, 22, ... 67 and 72 s.
+      await vi.advanceTimersByTimeAsync(72_000 - 1);
+      expect(isSettled()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(waiting).rejects.toMatchObject({ message: FAILED_OPENS_MESSAGE });
+    });
+
+    it("retries a reconnect whose socket throws while its listeners are added", async () => {
+      let created = 0;
+      const setup = pairedHost(reconnectTimeouts(), (factory) => (url) => {
+        created += 1;
+        const socket = factory(url) as TestSocket;
+        if (created === 2) {
+          const add = socket.addEventListener.bind(socket);
+          socket.addEventListener = (
+            type: "open" | "message" | "error" | "close",
+            listener: never,
+          ) => {
+            if (type === "message") throw new Error("listener failed");
+            add(type, listener);
+          };
+        }
+        return socket;
+      });
+      const { waiting } = setup.start();
+
+      await setup.leave();
+      expect(setup.relay.hostSockets).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(setup.relay.hostSockets).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(setup.relay.hostSockets).toHaveLength(3);
+
+      await expect(
+        setup.candidate().deliver(completionFor(setup.agent.publicKey, "after-listener-throw")),
+      ).resolves.toBeUndefined();
+      await expect(waiting).resolves.toMatchObject({ trustchainId: "after-listener-throw" });
+    });
+
+    it("leaves no timer when authenticate rejects after the host closed", async () => {
+      const setup = pairedHost();
+      let rejectAuthentication: () => void = () => undefined;
+      setup.authenticate.mockImplementation(
+        () =>
+          new Promise<undefined>(
+            (_, reject) => (rejectAuthentication = () => reject(new Error("denied"))),
+          ),
+      );
+      const { waiting } = setup.start();
+      const candidate = setup.candidate();
+      void candidate.deliver(completionFor(setup.agent.publicKey, "late")).catch(() => undefined);
+      await vi.waitFor(() => expect(setup.authenticate).toHaveBeenCalledOnce());
+      setup.host.close();
+      await expect(waiting).rejects.toThrow(/has been closed/);
+      candidate.close();
+      await vi.advanceTimersByTimeAsync(setup.relay.peerCloseDelayMs);
+
+      // The host answers the rejected completion with an encrypted Failure on its closed socket.
+      const hostSocket = setup.relay.hostSockets[0]!;
+      const send = hostSocket.send.bind(hostSocket);
+      const failureSent = new Promise<void>((resolve) => {
+        hostSocket.send = (data) => {
+          try {
+            send(data);
+          } finally {
+            resolve();
+          }
+        };
+      });
+      rejectAuthentication();
+      await failureSent;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("stops reconnecting once the request has expired by the wall clock", async () => {
+      const setup = pairedHost();
+      const { waiting, isSettled } = setup.start();
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Like a laptop waking from sleep: the wall clock passed expiry, but no timer fired yet.
+      vi.setSystemTime(new Date("2099-01-01T00:00:00.000Z"));
+      setup.relay.hostSockets[0]?.close();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(isSettled()).toBe(true);
+      await expect(waiting).rejects.toMatchObject({ message: "Enrollment completion timed out." });
+      expect(setup.relay.hostSockets).toHaveLength(1);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("does not retry a failed open once the request has expired by the wall clock", async () => {
+      const setup = pairedHost();
+      const { waiting } = setup.start();
+      setup.relay.refuseNextSockets = 99;
+      await setup.leave();
+      expect(setup.relay.hostSockets).toHaveLength(2);
+
+      vi.setSystemTime(new Date("2099-01-01T00:00:00.000Z"));
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(waiting).rejects.toMatchObject({ message: "Enrollment completion timed out." });
+      expect(setup.relay.hostSockets).toHaveLength(2);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("measures the failed-open streak on a monotonic clock", async () => {
+      const setup = pairedHost();
+      const { isSettled } = setup.start();
+      setup.relay.refuseNextSockets = 99;
+      await setup.leave();
+
+      vi.setSystemTime(Date.now() + 10 * 60_000);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(isSettled()).toBe(false);
+      expect(setup.relay.hostSockets).toHaveLength(3);
+    });
+
+    it("measures the stable window on a monotonic clock", async () => {
+      const setup = pairedHost();
+      const { waiting } = setup.start();
+      for (let round = 0; round < 5; round += 1) await setup.leave();
+
+      vi.setSystemTime(Date.now() + 10 * 60_000);
+      await setup.leave();
+      await expect(waiting).rejects.toMatchObject({ message: LIMIT_MESSAGE });
+    });
+
+    it("leaves no timer when a connecting reopen fails after the host closed", async () => {
+      const setup = pairedHost();
+      const { waiting } = setup.start();
+      setup.relay.refuseNextSockets = 1;
+      setup.relay.refuseDelayMs = 500;
+      await setup.leave();
+      expect(setup.relay.hostSockets).toHaveLength(2);
+
+      await vi.advanceTimersByTimeAsync(100);
+      setup.host.close();
+      await expect(waiting).rejects.toThrow(/has been closed/);
+      await vi.advanceTimersByTimeAsync(400);
+      expect(vi.getTimerCount()).toBe(0);
     });
 
     it("does not count failed opens toward the session limit", async () => {
@@ -1752,6 +2000,8 @@ class TestRelay {
   peerCloseDelayMs = 1_100;
   /** Fail the next host sockets before they open, like a refused upgrade or a network error. */
   refuseNextSockets = 0;
+  /** Report a refused socket's failure this long after it was created. */
+  refuseDelayMs = 0;
   /** Drop the recipient right after delivering this message, before its handler runs. */
   dropRecipientAfter: string | undefined;
   /** Report close this long after `close()`, like a real closing handshake. */
@@ -1782,10 +2032,12 @@ class TestRelay {
     this.sockets.push(socket);
     if (refused || (this.pairedChannel && this.room(url).length >= 2)) {
       socket.closed = true;
-      queueMicrotask(() => {
+      const report = () => {
         socket.emit("error");
         socket.emit("close");
-      });
+      };
+      if (refused && this.refuseDelayMs > 0) setTimeout(report, this.refuseDelayMs);
+      else queueMicrotask(report);
       return socket;
     }
     if (this.pairedChannel) this.room(url).push(socket);

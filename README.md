@@ -321,14 +321,17 @@ The host reopens its relay socket at most 5 times in a row; a socket that stayed
 open for at least 60 seconds before it was dropped resets that count, so drops
 spread over a long wait do not add up. If a reopened socket fails before
 connecting, the host retries after 1, 2 and 4 seconds, then every 5 seconds, and
-gives up once reopening has failed for 60 seconds. A candidate that does not
-finish the handshake within `handshakeTimeoutMs` no longer fails the host: the
-host closes that socket and reopens it like a relay drop, with a fresh wait for
-the next candidate, and this counts toward the 5 reconnects. Reconnecting never
-extends `completionTimeoutMs` or the request expiry, and a socket lost while a
-completion is being authenticated or persisted still fails the session. Both
-limits fail with an error that starts with "Enrollment relay closed before
-completion was acknowledged".
+gives up at the first retry that fails 60 seconds or more after the first
+failure. Both 60-second windows use a monotonic clock, so a wall-clock change
+does not move them. Reconnecting stops once the signed request has expired by
+the wall clock, which also covers a laptop that slept past the expiry. A
+candidate that does not finish the handshake within `handshakeTimeoutMs` no
+longer fails the host: the host closes that socket and reopens it like a relay
+drop, with a fresh wait for the next candidate, and this counts toward the 5
+reconnects. Reconnecting never extends `completionTimeoutMs` or the request
+expiry, and a socket lost while a completion is being authenticated or persisted
+still fails the session. Both limits fail with an error that starts with
+"Enrollment relay closed before completion was acknowledged".
 
 The channel sends only the agent public key, App-18 Trustchain ID, and safe
 App-16 environment/root/path references. It must never carry a serialized
