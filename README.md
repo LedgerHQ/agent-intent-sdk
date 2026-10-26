@@ -255,9 +255,15 @@ await candidate.deliver(completion); // resolves after the host acknowledges
 was lost (for example, the relay dropped the socket during device approval).
 If a delivery fails, for example because `authenticate` rejected it or the
 acknowledgement timed out, `deliver()` may be retried on the same candidate. Each
-retry opens a fresh session with a new ephemeral key, and a newly connecting
-candidate replaces one that has not delivered yet. A retry fails once the host has
-finished, closed, or timed out.
+retry opens a fresh session with a new ephemeral key. A retry fails once the host
+has finished, closed, timed out, or stopped reconnecting.
+
+The Trustchain relay runs a channel as one host and one candidate: it refuses a
+third socket and, when either side leaves, closes the other about a second later.
+Until a completion is being authenticated, the host then reopens its socket on
+the same key at once, so a reviewer who leaves the page can come back while the
+request is unexpired. A candidate that connects in the second before the host is
+back is rejected by the relay; retrying `connect()` or `deliver()` succeeds.
 
 ### Recovery
 
@@ -307,6 +313,14 @@ the same or a later candidate can complete the same bounded host session. A
 persistence failure closes the session without acknowledging. If enrollment was
 committed before delivery failed, re-enroll the agent with a channel-bound
 recovery request.
+
+The host reopens its relay socket at most 5 times per `waitForCompletion`. If a
+reopened socket fails before connecting, it retries after 1, 2, 4 and 5 seconds
+and stops after 5 consecutive failures. Reconnecting never extends
+`completionTimeoutMs` or the request expiry, and a socket lost while a
+completion is being authenticated or persisted still fails the session. Both
+limits fail with an error that starts with "Enrollment relay closed before
+completion was acknowledged".
 
 The channel sends only the agent public key, App-18 Trustchain ID, and safe
 App-16 environment/root/path references. It must never carry a serialized

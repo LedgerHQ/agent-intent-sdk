@@ -999,7 +999,361 @@ describe("encrypted enrollment channel", () => {
   it("does not expose protocol-vector helpers from the package root", () => {
     expect(packageExports).not.toHaveProperty("enrollmentChannelCryptoVectors");
   });
+
+  describe("host reconnect", () => {
+    const LIMIT_MESSAGE =
+      "Enrollment relay closed before completion was acknowledged; the host stopped reconnecting after 5 attempts.";
+    const FAILED_OPENS_MESSAGE =
+      "Enrollment relay closed before completion was acknowledged; the host could not reopen its relay connection after 5 attempts.";
+
+    it("reopens the host socket at once after its candidate leaves and accepts a new candidate", async () => {
+      const setup = pairedHost();
+      const { waiting } = setup.start();
+
+      await setup.leave();
+      expect(setup.relay.hostSockets[0]?.closed).toBe(true);
+      expect(setup.relay.hostSockets).toHaveLength(2);
+      expect(setup.relay.hostSockets[1]?.closed).toBe(false);
+
+      await expect(
+        setup.candidate().deliver(completionFor(setup.agent.publicKey, "after-reconnect")),
+      ).resolves.toBeUndefined();
+      await expect(waiting).resolves.toMatchObject({ trustchainId: "after-reconnect" });
+      expect(setup.persist).toHaveBeenCalledOnce();
+    });
+
+    it("fails on the sixth drop after five reconnects", async () => {
+      const setup = pairedHost();
+      const { waiting, isSettled } = setup.start();
+
+      // Each round completes a handshake, so a successful session never resets the count.
+      for (let round = 0; round < 5; round += 1) await setup.leave();
+      expect(setup.relay.hostSockets).toHaveLength(6);
+      expect(isSettled()).toBe(false);
+
+      await setup.leave();
+      await expect(waiting).rejects.toMatchObject({ message: LIMIT_MESSAGE });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(setup.relay.hostSockets).toHaveLength(6);
+      expect(setup.relay.sockets.every((socket) => socket.closed)).toBe(true);
+    });
+
+    it("retries a reconnect socket that fails to open after 1, 2, 4 and 5 seconds", async () => {
+      const setup = pairedHost();
+      const { waiting } = setup.start();
+      setup.relay.refuseNextSockets = 4;
+
+      await setup.leave();
+      expect(setup.relay.hostSockets).toHaveLength(2);
+      for (const delay of [1_000, 2_000, 4_000, 5_000]) {
+        const attempts = setup.relay.hostSockets.length;
+        await vi.advanceTimersByTimeAsync(delay - 1);
+        expect(setup.relay.hostSockets).toHaveLength(attempts);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(setup.relay.hostSockets).toHaveLength(attempts + 1);
+      }
+      expect(setup.relay.hostSockets[5]?.closed).toBe(false);
+
+      await expect(
+        setup.candidate().deliver(completionFor(setup.agent.publicKey, "after-retries")),
+      ).resolves.toBeUndefined();
+      await expect(waiting).resolves.toMatchObject({ trustchainId: "after-retries" });
+    });
+
+    it("resets the failed-open backoff once a reconnect opens", async () => {
+      const setup = pairedHost();
+      setup.start();
+      setup.relay.refuseNextSockets = 2;
+
+      await setup.leave();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(setup.relay.hostSockets).toHaveLength(4);
+      expect(setup.relay.hostSockets[3]?.closed).toBe(false);
+
+      setup.relay.refuseNextSockets = 1;
+      await setup.leave();
+      expect(setup.relay.hostSockets).toHaveLength(5);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(setup.relay.hostSockets).toHaveLength(5);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(setup.relay.hostSockets).toHaveLength(6);
+      expect(setup.relay.hostSockets[5]?.closed).toBe(false);
+    });
+
+    it("fails after 5 consecutive failed reconnect opens", async () => {
+      const setup = pairedHost();
+      const { waiting, isSettled } = setup.start();
+      setup.relay.refuseNextSockets = 99;
+
+      await setup.leave();
+      await vi.advanceTimersByTimeAsync(1_000 + 2_000 + 4_000 + 5_000 - 1);
+      expect(isSettled()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(waiting).rejects.toMatchObject({ message: FAILED_OPENS_MESSAGE });
+      expect(setup.relay.hostSockets).toHaveLength(6);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(setup.relay.hostSockets).toHaveLength(6);
+    });
+
+    it("does not count failed opens toward the session limit", async () => {
+      const setup = pairedHost();
+      const { waiting } = setup.start();
+      setup.relay.refuseNextSockets = 4;
+
+      await setup.leave();
+      await vi.advanceTimersByTimeAsync(1_000 + 2_000 + 4_000 + 5_000);
+      expect(setup.relay.hostSockets.at(-1)?.closed).toBe(false);
+      for (let round = 0; round < 4; round += 1) await setup.leave();
+
+      await expect(
+        setup.candidate().deliver(completionFor(setup.agent.publicKey, "fifth-reconnect")),
+      ).resolves.toBeUndefined();
+      await expect(waiting).resolves.toMatchObject({ trustchainId: "fifth-reconnect" });
+    });
+
+    it("fails at once when the initial host socket never opens", async () => {
+      const setup = pairedHost();
+      setup.relay.refuseNextSockets = 1;
+      const { waiting } = setup.start();
+
+      await expect(waiting).rejects.toThrow(/connection failed/);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(setup.relay.hostSockets).toHaveLength(1);
+    });
+
+    it.each(["authenticate", "persist"] as const)(
+      "does not reopen the host while a completion is in %s",
+      async (phase) => {
+        const setup = pairedHost();
+        setup[phase].mockImplementation(() => new Promise<undefined>(() => undefined));
+        const { waiting } = setup.start();
+        const candidate = setup.candidate();
+        void candidate
+          .deliver(completionFor(setup.agent.publicKey, "trusted"))
+          .catch(() => undefined);
+        await vi.waitFor(() => expect(setup[phase]).toHaveBeenCalledOnce());
+
+        candidate.close();
+        await vi.advanceTimersByTimeAsync(setup.relay.peerCloseDelayMs);
+        await expect(waiting).rejects.toMatchObject({
+          message: "Enrollment relay closed before completion was acknowledged.",
+        });
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(setup.relay.hostSockets).toHaveLength(1);
+      },
+    );
+
+    it("keeps the completion deadline while a reconnect is pending", async () => {
+      const setup = pairedHost({ ...reconnectTimeouts(), completionTimeoutMs: 10_000 });
+      const { waiting, isSettled } = setup.start();
+      setup.relay.refuseNextSockets = 99;
+
+      // The drop lands at 1.1 s; retries follow at 2.1, 4.1 and 8.1 s, the next would be 13.1 s.
+      await setup.leave();
+      await vi.advanceTimersByTimeAsync(10_000 - setup.relay.peerCloseDelayMs - 1);
+      expect(isSettled()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(waiting).rejects.toThrow(/completion timed out/);
+      expect(setup.relay.hostSockets).toHaveLength(5);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(setup.relay.hostSockets).toHaveLength(5);
+    });
+
+    it("does not extend the completion deadline when the host reconnects", async () => {
+      const setup = pairedHost({ ...reconnectTimeouts(), completionTimeoutMs: 10_000 });
+      const { waiting, isSettled } = setup.start();
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      await setup.leave();
+      expect(setup.relay.hostSockets).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(10_000 - 5_000 - setup.relay.peerCloseDelayMs - 1);
+      expect(isSettled()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(waiting).rejects.toThrow(/completion timed out/);
+    });
+
+    it("opens no socket when the host is closed during a pending retry", async () => {
+      const setup = pairedHost();
+      const { waiting } = setup.start();
+      setup.relay.refuseNextSockets = 1;
+
+      await setup.leave();
+      expect(setup.relay.hostSockets).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(500);
+      setup.host.close();
+      await expect(waiting).rejects.toThrow(/has been closed/);
+      const pings = setup.relay.pings;
+
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      expect(setup.relay.hostSockets).toHaveLength(2);
+      expect(setup.relay.sockets.every((socket) => socket.closed)).toBe(true);
+      expect(setup.relay.pings).toBe(pings);
+    });
+
+    it("stops reconnecting once the host is closed", async () => {
+      const setup = pairedHost();
+      const { waiting } = setup.start();
+      await vi.advanceTimersByTimeAsync(0);
+
+      setup.relay.hostSockets[0]?.close();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(setup.relay.hostSockets).toHaveLength(2);
+      setup.host.close();
+      await expect(waiting).rejects.toThrow(/has been closed/);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(setup.relay.hostSockets).toHaveLength(2);
+      expect(setup.relay.hostSockets.every((socket) => socket.closed)).toBe(true);
+    });
+
+    it("ignores events from a replaced host socket", async () => {
+      const setup = pairedHost();
+      const { waiting } = setup.start();
+      await setup.leave();
+      const second = setup.candidate();
+      await second.connect();
+
+      const replaced = setup.relay.hostSockets[0];
+      replaced?.emit("close");
+      replaced?.emit("message", { data: JSON.stringify(relayFailure()) });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(setup.relay.hostSockets).toHaveLength(2);
+
+      await expect(
+        second.deliver(completionFor(setup.agent.publicKey, "current-socket")),
+      ).resolves.toBeUndefined();
+      await expect(waiting).resolves.toMatchObject({ trustchainId: "current-socket" });
+    });
+
+    it("lets a candidate that arrives before the host is back retry", async () => {
+      const setup = pairedHost();
+      const { waiting } = setup.start();
+      const first = setup.candidate();
+      await first.connect();
+      first.close();
+
+      // The relay has not closed the host yet, so this candidate finds the channel without one.
+      const second = setup.candidate();
+      await expect(second.connect()).rejects.toThrow();
+      await vi.advanceTimersByTimeAsync(setup.relay.peerCloseDelayMs);
+      expect(setup.relay.hostSockets).toHaveLength(2);
+
+      await expect(
+        second.deliver(completionFor(setup.agent.publicKey, "second-try")),
+      ).resolves.toBeUndefined();
+      await expect(waiting).resolves.toMatchObject({ trustchainId: "second-try" });
+    });
+
+    it("keeps the candidate wait when the relay drops a host that has no candidate", async () => {
+      const setup = pairedHost({
+        ...reconnectTimeouts(),
+        candidateTimeoutMs: 10_000,
+        completionTimeoutMs: 60_000,
+      });
+      const { waiting, isSettled } = setup.start();
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      setup.relay.hostSockets[0]?.close();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(setup.relay.hostSockets).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(isSettled()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(waiting).rejects.toThrow(/waiting for the frontend candidate/);
+    });
+
+    it("drops a completion that was queued when the relay dropped the host", async () => {
+      const setup = pairedHost();
+      const { waiting, isSettled } = setup.start();
+      const first = setup.candidate();
+      await first.connect();
+
+      setup.relay.dropRecipientAfter = "TrustchainShareCredential";
+      void first.deliver(completionFor(setup.agent.publicKey, "dropped")).catch(() => undefined);
+      await vi.waitFor(() => expect(setup.relay.hostSockets).toHaveLength(2));
+      setup.relay.dropRecipientAfter = undefined;
+      expect(setup.authenticate).not.toHaveBeenCalled();
+      expect(setup.persist).not.toHaveBeenCalled();
+      expect(isSettled()).toBe(false);
+
+      await expect(
+        setup.candidate().deliver(completionFor(setup.agent.publicKey, "after-drop")),
+      ).resolves.toBeUndefined();
+      await expect(waiting).resolves.toMatchObject({ trustchainId: "after-drop" });
+    });
+  });
 });
+
+function reconnectTimeouts() {
+  return {
+    candidateTimeoutMs: 30 * 60_000,
+    handshakeTimeoutMs: 30 * 60_000,
+    completionTimeoutMs: 30 * 60_000,
+    acknowledgementTimeoutMs: 30 * 60_000,
+    persistTimeoutMs: 30 * 60_000,
+  };
+}
+
+/** A host on a relay that behaves like the Trustchain one, with fake timers. */
+function pairedHost(timeouts = reconnectTimeouts()) {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2098-01-01T00:00:00.000Z"));
+  const relay = new TestRelay();
+  relay.pairedChannel = true;
+  const agent = createSoftwareAgentIdentity();
+  const host = createAgentEnrollmentChannelHost({
+    environment: "production",
+    relayBaseUrl: RELAY_URL,
+    webSocketFactory: relay.hostFactory,
+    timeouts,
+  });
+  const request = channelRequest(agent, host.binding);
+  const authenticate = vi.fn(async () => undefined);
+  const persist = vi.fn(async () => undefined);
+  const candidate = () =>
+    createAgentEnrollmentChannelCandidate({
+      request,
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+      timeouts,
+    });
+  return {
+    relay,
+    agent,
+    host,
+    authenticate,
+    persist,
+    candidate,
+    start: () => {
+      let settled = false;
+      const waiting = host.waitForCompletion({ request, authenticate, persist });
+      waiting.then(
+        () => (settled = true),
+        () => (settled = true),
+      );
+      return { waiting, isSettled: () => settled };
+    },
+    // A reviewer opens the page, completes the handshake, leaves, and the relay closes the host.
+    leave: async () => {
+      const visit = candidate();
+      await visit.connect();
+      visit.close();
+      await vi.advanceTimersByTimeAsync(relay.peerCloseDelayMs);
+    },
+  };
+}
+
+function relayFailure() {
+  return {
+    version: 1,
+    publisher: "00".repeat(33),
+    message: "Failure",
+    payload: {
+      type: "PROTOCOL_VIOLATION",
+      message: "Expected another message at this point in the protocol",
+    },
+  };
+}
 
 function channelRequest(
   agent: ReturnType<typeof createSoftwareAgentIdentity>,
@@ -1078,7 +1432,15 @@ class TestSocket implements EnrollmentChannelWebSocket {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.relay.left(this);
     if (this.relay.socketsEmitClose) queueMicrotask(() => this.emit("close"));
+  }
+
+  /** Closes and reports it in the same task, before handlers queued for earlier frames run. */
+  drop(): void {
+    this.closed = true;
+    this.relay.left(this);
+    this.emit("close");
   }
 
   addEventListener(type: "open" | "message" | "error" | "close", listener: never): void {
@@ -1104,20 +1466,53 @@ class TestRelay {
   binaryFrames = false;
   /** Whether a closed socket emits a close event; custom factories might not. */
   socketsEmitClose = true;
+  /**
+   * Like the Trustchain relay: a channel holds one host and one candidate, refuses a third
+   * socket, rejects a handshake that arrives before the host, and closes the remaining side
+   * once the other leaves.
+   */
+  pairedChannel = false;
+  /** How long the paired relay takes to close the remaining side; measured at 1.1–1.5 s. */
+  peerCloseDelayMs = 1_100;
+  /** Fail the next host sockets before they open, like a refused upgrade or a network error. */
+  refuseNextSockets = 0;
+  /** Drop the recipient right after delivering this message, before its handler runs. */
+  dropRecipientAfter: string | undefined;
+  /** Sockets opened through `hostFactory`, in order. */
+  readonly hostSockets: TestSocket[] = [];
   private readonly idleTimers = new Map<TestSocket, ReturnType<typeof setTimeout>>();
+  private readonly rooms = new Map<string, TestSocket[]>();
 
   constructor(
     private readonly droppedMessage?: string,
     private readonly duplicatedMessage?: string,
   ) {}
 
-  readonly factory: EnrollmentChannelWebSocketFactory = () => {
+  readonly factory: EnrollmentChannelWebSocketFactory = (url) => this.open(url, false);
+
+  readonly hostFactory: EnrollmentChannelWebSocketFactory = (url) => {
+    const socket = this.open(url, this.refuseNextSockets > 0);
+    this.refuseNextSockets = Math.max(0, this.refuseNextSockets - 1);
+    this.hostSockets.push(socket);
+    return socket;
+  };
+
+  private open(url: string, refused: boolean): TestSocket {
     const socket = new TestSocket(this);
     this.sockets.push(socket);
+    if (refused || (this.pairedChannel && this.room(url).length >= 2)) {
+      socket.closed = true;
+      queueMicrotask(() => {
+        socket.emit("error");
+        socket.emit("close");
+      });
+      return socket;
+    }
+    if (this.pairedChannel) this.room(url).push(socket);
     this.touch(socket);
     queueMicrotask(() => socket.emit("open"));
     return socket;
-  };
+  }
 
   forward(sender: TestSocket, data: string): void {
     if (data === "ping") {
@@ -1127,6 +1522,10 @@ class TestRelay {
     }
     const envelope = JSON.parse(data) as { message?: string };
     if (envelope.message === this.droppedMessage) return;
+    if (this.pairedChannel) {
+      this.forwardInRoom(sender, data, envelope.message);
+      return;
+    }
     const host = this.sockets[0];
     const recipients =
       sender === host ? this.sockets.slice(1).filter((socket) => !socket.closed) : [host];
@@ -1138,10 +1537,43 @@ class TestRelay {
     }
   }
 
-  private deliver(recipient: TestSocket, data: string): void {
+  left(socket: TestSocket): void {
+    const room = [...this.rooms.values()].find((members) => members.includes(socket));
+    if (!room) return;
+    room.splice(room.indexOf(socket), 1);
+    for (const peer of room.splice(0)) setTimeout(() => peer.close(), this.peerCloseDelayMs);
+  }
+
+  private forwardInRoom(sender: TestSocket, data: string, message: string | undefined): void {
+    const room = [...this.rooms.values()].find((members) => members.includes(sender));
+    if (!room) return;
+    if (message === "InitiateHandshake" && sender === room[0]) {
+      this.deliver(sender, JSON.stringify(relayFailure()));
+      for (const member of room.splice(0)) {
+        setTimeout(() => member.close(), this.peerCloseDelayMs);
+      }
+      return;
+    }
+    for (const recipient of room) {
+      if (recipient !== sender) {
+        this.deliver(recipient, data, message === this.dropRecipientAfter);
+      }
+    }
+  }
+
+  private room(url: string): TestSocket[] {
+    const room = this.rooms.get(url) ?? [];
+    this.rooms.set(url, room);
+    return room;
+  }
+
+  private deliver(recipient: TestSocket, data: string, dropAfter = false): void {
     this.touch(recipient);
     const frame = this.binaryFrames ? Buffer.from(data) : data;
-    queueMicrotask(() => recipient.emit("message", { data: frame }));
+    queueMicrotask(() => {
+      recipient.emit("message", { data: frame });
+      if (dropAfter) recipient.drop();
+    });
   }
 
   private touch(socket: TestSocket): void {
