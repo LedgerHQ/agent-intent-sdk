@@ -1026,7 +1026,9 @@ describe("encrypted enrollment channel", () => {
     const LIMIT_MESSAGE =
       "Enrollment relay closed before completion was acknowledged; the host stopped reconnecting after 5 attempts.";
     const FAILED_OPENS_MESSAGE =
-      "Enrollment relay closed before completion was acknowledged; the host could not reopen its relay connection after 5 attempts.";
+      "Enrollment relay closed before completion was acknowledged; the host could not reopen its relay connection for 60 seconds.";
+    // Failed opens of one streak land at 0, 1, 3 and 7 s, then every 5 s; the one at 62 s gives up.
+    const FAILED_OPEN_TIMES_MS = [0, 1_000, 3_000, 7_000, 12_000, 17_000, 22_000, 27_000, 32_000];
 
     it("reopens the host socket at once after its candidate leaves and accepts a new candidate", async () => {
       const setup = pairedHost();
@@ -1060,21 +1062,21 @@ describe("encrypted enrollment channel", () => {
       expect(setup.relay.sockets.every((socket) => socket.closed)).toBe(true);
     });
 
-    it("retries a reconnect socket that fails to open after 1, 2, 4 and 5 seconds", async () => {
+    it("retries a reconnect socket that fails to open after 1, 2 and 4 seconds, then every 5 seconds", async () => {
       const setup = pairedHost();
       const { waiting } = setup.start();
-      setup.relay.refuseNextSockets = 4;
+      setup.relay.refuseNextSockets = 6;
 
       await setup.leave();
       expect(setup.relay.hostSockets).toHaveLength(2);
-      for (const delay of [1_000, 2_000, 4_000, 5_000]) {
+      for (const delay of [1_000, 2_000, 4_000, 5_000, 5_000, 5_000]) {
         const attempts = setup.relay.hostSockets.length;
         await vi.advanceTimersByTimeAsync(delay - 1);
         expect(setup.relay.hostSockets).toHaveLength(attempts);
         await vi.advanceTimersByTimeAsync(1);
         expect(setup.relay.hostSockets).toHaveLength(attempts + 1);
       }
-      expect(setup.relay.hostSockets[5]?.closed).toBe(false);
+      expect(setup.relay.hostSockets[7]?.closed).toBe(false);
 
       await expect(
         setup.candidate().deliver(completionFor(setup.agent.publicKey, "after-retries")),
@@ -1082,39 +1084,112 @@ describe("encrypted enrollment channel", () => {
       await expect(waiting).resolves.toMatchObject({ trustchainId: "after-retries" });
     });
 
-    it("resets the failed-open backoff once a reconnect opens", async () => {
+    it("resets the failed-open backoff and streak once a reconnect opens", async () => {
       const setup = pairedHost();
-      setup.start();
-      setup.relay.refuseNextSockets = 2;
+      const { isSettled } = setup.start();
+      // Fails at 0, 1, 3, 7, 12, ... 57 s and opens at 62 s, just past the 60-second streak.
+      setup.relay.refuseNextSockets = 14;
 
       await setup.leave();
-      await vi.advanceTimersByTimeAsync(1_000);
-      await vi.advanceTimersByTimeAsync(2_000);
-      expect(setup.relay.hostSockets).toHaveLength(4);
-      expect(setup.relay.hostSockets[3]?.closed).toBe(false);
+      await vi.advanceTimersByTimeAsync(62_000);
+      expect(setup.relay.hostSockets).toHaveLength(16);
+      expect(setup.relay.hostSockets[15]?.closed).toBe(false);
 
       setup.relay.refuseNextSockets = 1;
       await setup.leave();
-      expect(setup.relay.hostSockets).toHaveLength(5);
+      expect(setup.relay.hostSockets).toHaveLength(17);
+      expect(isSettled()).toBe(false);
       await vi.advanceTimersByTimeAsync(999);
-      expect(setup.relay.hostSockets).toHaveLength(5);
+      expect(setup.relay.hostSockets).toHaveLength(17);
       await vi.advanceTimersByTimeAsync(1);
-      expect(setup.relay.hostSockets).toHaveLength(6);
-      expect(setup.relay.hostSockets[5]?.closed).toBe(false);
+      expect(setup.relay.hostSockets).toHaveLength(18);
+      expect(setup.relay.hostSockets[17]?.closed).toBe(false);
     });
 
-    it("fails after 5 consecutive failed reconnect opens", async () => {
+    it("gives up once reopening has failed for 60 seconds", async () => {
       const setup = pairedHost();
       const { waiting, isSettled } = setup.start();
       setup.relay.refuseNextSockets = 99;
 
       await setup.leave();
-      await vi.advanceTimersByTimeAsync(1_000 + 2_000 + 4_000 + 5_000 - 1);
+      for (const [index, at] of FAILED_OPEN_TIMES_MS.entries()) {
+        if (index > 0) await vi.advanceTimersByTimeAsync(at - FAILED_OPEN_TIMES_MS[index - 1]!);
+        expect(setup.relay.hostSockets).toHaveLength(index + 2);
+      }
+      await vi.advanceTimersByTimeAsync(62_000 - 32_000 - 1);
+      expect(setup.relay.hostSockets).toHaveLength(15);
       expect(isSettled()).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
       await expect(waiting).rejects.toMatchObject({ message: FAILED_OPENS_MESSAGE });
-      expect(setup.relay.hostSockets).toHaveLength(6);
+      expect(setup.relay.hostSockets).toHaveLength(16);
       await vi.advanceTimersByTimeAsync(60_000);
+      expect(setup.relay.hostSockets).toHaveLength(16);
+    });
+
+    it("resets the session limit after a socket stayed open for 60 seconds", async () => {
+      const setup = pairedHost();
+      const { waiting } = setup.start();
+
+      for (let round = 0; round < 7; round += 1) {
+        await vi.advanceTimersByTimeAsync(60_000);
+        await setup.leave();
+      }
+      expect(setup.relay.hostSockets).toHaveLength(8);
+
+      await expect(
+        setup.candidate().deliver(completionFor(setup.agent.publicKey, "slow-visits")),
+      ).resolves.toBeUndefined();
+      await expect(waiting).resolves.toMatchObject({ trustchainId: "slow-visits" });
+    });
+
+    it.each([
+      { openMs: 59_999, limited: true },
+      { openMs: 60_000, limited: false },
+    ])("counts a drop after $openMs ms open: $limited", async ({ openMs, limited }) => {
+      const setup = pairedHost();
+      const { waiting, isSettled } = setup.start();
+      for (let round = 0; round < 5; round += 1) await setup.leave();
+
+      // The sixth socket opened as the fifth drop landed; leave() drops it peerCloseDelayMs later.
+      await vi.advanceTimersByTimeAsync(openMs - setup.relay.peerCloseDelayMs);
+      await setup.leave();
+      if (limited) {
+        await expect(waiting).rejects.toMatchObject({ message: LIMIT_MESSAGE });
+      } else {
+        expect(isSettled()).toBe(false);
+        expect(setup.relay.hostSockets).toHaveLength(7);
+      }
+    });
+
+    it("reopens the host when a candidate goes silent during the handshake", async () => {
+      const setup = pairedHost({ ...reconnectTimeouts(), handshakeTimeoutMs: 30_000 });
+      // The handshake timeout must not wait for a close event that some sockets never send.
+      setup.relay.socketsEmitClose = false;
+      const { waiting } = setup.start();
+
+      const silent = await silentCandidate(setup);
+      await vi.advanceTimersByTimeAsync(30_000 - 1);
+      expect(setup.relay.hostSockets).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(setup.relay.hostSockets).toHaveLength(2);
+      expect(setup.relay.hostSockets[0]?.closed).toBe(true);
+      await vi.advanceTimersByTimeAsync(setup.relay.peerCloseDelayMs);
+      expect(silent.closed).toBe(true);
+
+      await expect(
+        setup.candidate().deliver(completionFor(setup.agent.publicKey, "after-silence")),
+      ).resolves.toBeUndefined();
+      await expect(waiting).resolves.toMatchObject({ trustchainId: "after-silence" });
+    });
+
+    it("counts a handshake timeout toward the session limit", async () => {
+      const setup = pairedHost({ ...reconnectTimeouts(), handshakeTimeoutMs: 30_000 });
+      const { waiting } = setup.start();
+      for (let round = 0; round < 5; round += 1) await setup.leave();
+
+      await silentCandidate(setup);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await expect(waiting).rejects.toMatchObject({ message: LIMIT_MESSAGE });
       expect(setup.relay.hostSockets).toHaveLength(6);
     });
 
@@ -1490,6 +1565,7 @@ function pairedHost(
     relay,
     agent,
     host,
+    request,
     authenticate,
     persist,
     candidate,
@@ -1510,6 +1586,35 @@ function pairedHost(
       await vi.advanceTimersByTimeAsync(relay.peerCloseDelayMs);
     },
   };
+}
+
+/** Connects a candidate that sends InitiateHandshake, then nothing; resolves once challenged. */
+async function silentCandidate(setup: ReturnType<typeof pairedHost>): Promise<TestSocket> {
+  const challenged = new Promise<void>((resolve) => {
+    setup.relay.onSend = (_sender, message) => {
+      if (message === "HandshakeChallenge") resolve();
+    };
+  });
+  let silent: TestSocket | undefined;
+  const candidate = createAgentEnrollmentChannelCandidate({
+    request: setup.request,
+    relayBaseUrl: RELAY_URL,
+    timeouts: reconnectTimeouts(),
+    webSocketFactory: (url) => {
+      const socket = setup.relay.factory(url) as TestSocket;
+      const send = socket.send.bind(socket);
+      socket.send = (data) => {
+        if (data.includes("InitiateHandshake")) send(data);
+      };
+      silent = socket;
+      return socket;
+    },
+  });
+  void candidate.connect().catch(() => undefined);
+  await challenged;
+  setup.relay.onSend = undefined;
+  if (!silent) throw new Error("expected a candidate socket");
+  return silent;
 }
 
 function relayFailure() {
