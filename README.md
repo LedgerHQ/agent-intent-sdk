@@ -317,10 +317,15 @@ persistence failure closes the session without acknowledging. If enrollment was
 committed before delivery failed, re-enroll the agent with a channel-bound
 recovery request.
 
-The host reopens its relay socket at most 5 times per `waitForCompletion`. If a
-reopened socket fails before connecting, it retries after 1, 2, 4 and 5 seconds
-and stops after 5 consecutive failures. Reconnecting never extends
-`completionTimeoutMs` or the request expiry, and a socket lost while a
+The host reopens its relay socket at most 5 times in a row; a socket that stayed
+open for at least 60 seconds before it was dropped resets that count, so drops
+spread over a long wait do not add up. If a reopened socket fails before
+connecting, the host retries after 1, 2 and 4 seconds, then every 5 seconds, and
+gives up once reopening has failed for 60 seconds. A candidate that does not
+finish the handshake within `handshakeTimeoutMs` no longer fails the host: the
+host closes that socket and reopens it like a relay drop, with a fresh wait for
+the next candidate, and this counts toward the 5 reconnects. Reconnecting never
+extends `completionTimeoutMs` or the request expiry, and a socket lost while a
 completion is being authenticated or persisted still fails the session. Both
 limits fail with an error that starts with "Enrollment relay closed before
 completion was acknowledged".

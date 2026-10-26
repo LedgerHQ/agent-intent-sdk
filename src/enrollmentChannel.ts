@@ -33,10 +33,14 @@ const RELAY_KEEPALIVE_PING = "ping";
 const RELAY_KEEPALIVE_PONG = "pong";
 
 // The relay closes the host socket once its candidate leaves. The host reopens on the same key
-// a bounded number of times, and retries a reopened socket that fails before it connects.
+// up to a limit of quick reconnects; a socket that stayed open long enough resets the count.
+// A reopened socket that fails before it connects is retried until reopening has failed for
+// a minute.
 const HOST_RECONNECT_LIMIT = 5;
-const HOST_RECONNECT_OPEN_ATTEMPT_LIMIT = 5;
-const HOST_RECONNECT_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 5_000] as const;
+const HOST_RECONNECT_STABLE_MS = 60_000;
+const HOST_RECONNECT_RETRY_DELAYS_MS = [1_000, 2_000, 4_000] as const;
+const HOST_RECONNECT_RETRY_INTERVAL_MS = 5_000;
+const HOST_RECONNECT_GIVE_UP_MS = 60_000;
 
 type RelayMessageName =
   | "InitiateHandshake"
@@ -263,6 +267,8 @@ function runHost(
     let settled = false;
     let reconnects = 0;
     let failedOpens = 0;
+    let failedOpenSince: number | undefined;
+    let loseSocket: (message: string) => void = () => undefined;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
     const fail = failChannel(
@@ -286,9 +292,12 @@ function runHost(
     };
     const armHandshakeTimer = () => {
       clearTimeout(phaseTimer);
-      phaseTimer = deadlineTimer(timeouts.handshakeTimeoutMs, request.expiresAt, () =>
-        fail(channelError("Enrollment channel handshake timed out.")),
-      );
+      // A candidate that stops answering is dropped like a relay drop, so another can connect.
+      // The lost path runs directly because some sockets never report their own close.
+      phaseTimer = deadlineTimer(timeouts.handshakeTimeoutMs, request.expiresAt, () => {
+        loseSocket("Enrollment channel handshake timed out.");
+        socket.close();
+      });
     };
     completionTimer = deadlineTimer(timeouts.completionTimeoutMs, request.expiresAt, () =>
       fail(channelError("Enrollment completion timed out.")),
@@ -324,17 +333,18 @@ function runHost(
     armCandidateTimer();
     const failedOpen = () => {
       failedOpens += 1;
-      if (failedOpens >= HOST_RECONNECT_OPEN_ATTEMPT_LIMIT) {
+      failedOpenSince ??= Date.now();
+      if (Date.now() - failedOpenSince >= HOST_RECONNECT_GIVE_UP_MS) {
         fail(
           channelError(
-            `Enrollment relay closed before completion was acknowledged; the host could not reopen its relay connection after ${HOST_RECONNECT_OPEN_ATTEMPT_LIMIT} attempts.`,
+            `Enrollment relay closed before completion was acknowledged; the host could not reopen its relay connection for ${HOST_RECONNECT_GIVE_UP_MS / 1_000} seconds.`,
           ),
         );
         return;
       }
       reconnectTimer = setTimeout(
         openReconnect,
-        HOST_RECONNECT_RETRY_DELAYS_MS[failedOpens - 1] ?? 5_000,
+        HOST_RECONNECT_RETRY_DELAYS_MS[failedOpens - 1] ?? HOST_RECONNECT_RETRY_INTERVAL_MS,
       );
     };
     const openReconnect = () => {
@@ -361,6 +371,7 @@ function runHost(
     };
     const attach = (source: EnrollmentChannelWebSocket, reopened: boolean) => {
       let opened = false;
+      let openedAt = 0;
       let lost = false;
       const onLost = (message: string) => {
         if (lost || source !== socket || settled) return;
@@ -374,6 +385,7 @@ function runHost(
           fail(channelError(message));
           return;
         }
+        if (Date.now() - openedAt >= HOST_RECONNECT_STABLE_MS) reconnects = 0;
         if (reconnects >= HOST_RECONNECT_LIMIT) {
           fail(
             channelError(
@@ -388,7 +400,11 @@ function runHost(
       };
       source.addEventListener("open", () => {
         opened = true;
-        if (reopened) failedOpens = 0;
+        openedAt = Date.now();
+        if (reopened) {
+          failedOpens = 0;
+          failedOpenSince = undefined;
+        }
         if (source === socket && !settled) stopKeepAlive = keepRelayAlive(source);
       });
       source.addEventListener("error", () => onLost("Enrollment relay connection failed."));
@@ -401,6 +417,7 @@ function runHost(
         }
       });
       socket = source;
+      loseSocket = onLost;
     };
     const handleMessage = (data: unknown, lost: () => boolean) => {
       messageQueue = messageQueue
