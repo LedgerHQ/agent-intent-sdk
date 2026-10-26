@@ -593,6 +593,10 @@ function openCandidateSession(
     messageQueue = messageQueue
       .then(async () => {
         const envelope = parseEnvelope(event.data);
+        // The relay's own Failure is unencrypted and does not carry the host key as publisher.
+        if (envelope.message === "Failure" && !("encrypted" in envelope.payload)) {
+          throw channelError("The enrollment relay rejected the session.");
+        }
         if (envelope.publisher.toLowerCase() !== request.channel.hostPublicKey.toLowerCase()) {
           throw channelError("Enrollment channel host does not match the signed request.");
         }
