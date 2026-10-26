@@ -1205,6 +1205,7 @@ describe("encrypted enrollment channel", () => {
       await vi.advanceTimersByTimeAsync(500);
       setup.host.close();
       await expect(waiting).rejects.toThrow(/has been closed/);
+      expect(vi.getTimerCount()).toBe(0);
       const pings = setup.relay.pings;
 
       await vi.advanceTimersByTimeAsync(5 * 60_000);
@@ -1303,6 +1304,149 @@ describe("encrypted enrollment channel", () => {
       ).resolves.toBeUndefined();
       await expect(waiting).resolves.toMatchObject({ trustchainId: "after-drop" });
     });
+
+    it("re-arms the candidate wait after a drop once a candidate was authenticated", async () => {
+      const setup = pairedHost({ ...reconnectTimeouts(), candidateTimeoutMs: 10_000 });
+      const { waiting, isSettled } = setup.start();
+
+      await setup.leave();
+      await vi.advanceTimersByTimeAsync(10_000 - 1);
+      expect(isSettled()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(waiting).rejects.toThrow(/waiting for the frontend candidate/);
+    });
+
+    it("re-arms the candidate wait after a drop during the handshake", async () => {
+      const setup = pairedHost({ ...reconnectTimeouts(), candidateTimeoutMs: 10_000 });
+      const { waiting, isSettled } = setup.start();
+      setup.relay.dropRecipientAfter = "HandshakeChallenge";
+
+      await setup
+        .candidate()
+        .connect()
+        .catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(setup.relay.peerCloseDelayMs);
+      expect(setup.relay.hostSockets).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(10_000 - 1);
+      expect(isSettled()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(waiting).rejects.toThrow(/waiting for the frontend candidate/);
+    });
+
+    it("reconnects only after the handshake handler that saw the drop finishes", async () => {
+      const setup = pairedHost({ ...reconnectTimeouts(), candidateTimeoutMs: 10_000 });
+      const { waiting, isSettled } = setup.start();
+      const dropped = new Promise<void>((resolve) => {
+        setup.relay.onSend = (sender, message) => {
+          if (message !== "HandshakeCompletionSucceeded") return;
+          sender.drop();
+          resolve();
+        };
+      });
+
+      void setup
+        .candidate()
+        .connect()
+        .catch(() => undefined);
+      await dropped;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(setup.relay.hostSockets).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(10_000 - 1);
+      expect(isSettled()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(waiting).rejects.toThrow(/waiting for the frontend candidate/);
+    });
+
+    it("keeps the candidate wait while failed reopens are retried", async () => {
+      const setup = pairedHost({
+        ...reconnectTimeouts(),
+        candidateTimeoutMs: 10_000,
+        completionTimeoutMs: 60_000,
+      });
+      const { waiting, isSettled } = setup.start();
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      setup.relay.refuseNextSockets = 3;
+      setup.relay.hostSockets[0]?.close();
+      await vi.advanceTimersByTimeAsync(5_000 - 1);
+      expect(setup.relay.hostSockets).toHaveLength(4);
+      expect(isSettled()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(waiting).rejects.toThrow(/waiting for the frontend candidate/);
+    });
+
+    it("leaves no timer behind after reconnecting twice and delivering", async () => {
+      const setup = pairedHost();
+      const { waiting } = setup.start();
+      await setup.leave();
+      await setup.leave();
+
+      await expect(
+        setup.candidate().deliver(completionFor(setup.agent.publicKey, "third-visit")),
+      ).resolves.toBeUndefined();
+      await expect(waiting).resolves.toMatchObject({ trustchainId: "third-visit" });
+      await vi.advanceTimersByTimeAsync(setup.relay.peerCloseDelayMs);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("retries a reconnect whose socket factory throws", async () => {
+      let calls = 0;
+      const setup = pairedHost(reconnectTimeouts(), (factory) => (url) => {
+        calls += 1;
+        if (calls === 2) throw new Error("socket factory failed");
+        return factory(url);
+      });
+      const { waiting } = setup.start();
+
+      await setup.leave();
+      expect(setup.relay.hostSockets).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(setup.relay.hostSockets).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(setup.relay.hostSockets).toHaveLength(2);
+
+      await expect(
+        setup.candidate().deliver(completionFor(setup.agent.publicKey, "after-throw")),
+      ).resolves.toBeUndefined();
+      await expect(waiting).resolves.toMatchObject({ trustchainId: "after-throw" });
+    });
+
+    it("stays closed when the host is closed while a handshake is being confirmed", async () => {
+      const setup = pairedHost();
+      const { waiting } = setup.start();
+      // Like undici and ws, the close event arrives after the closing handshake.
+      setup.relay.closeEventDelayMs = 100;
+      setup.relay.onSend = (_sender, message) => {
+        if (message === "HandshakeCompletionSucceeded") setup.host.close();
+      };
+
+      void setup
+        .candidate()
+        .connect()
+        .catch(() => undefined);
+      await expect(waiting).rejects.toThrow(/has been closed/);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(setup.relay.hostSockets).toHaveLength(1);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("does not persist a completion once the host closed during authentication", async () => {
+      const setup = pairedHost();
+      let authenticated: () => void = () => undefined;
+      setup.authenticate.mockImplementation(
+        () => new Promise<undefined>((resolve) => (authenticated = () => resolve(undefined))),
+      );
+      const { waiting } = setup.start();
+      const candidate = setup.candidate();
+      void candidate.deliver(completionFor(setup.agent.publicKey, "late")).catch(() => undefined);
+      await vi.waitFor(() => expect(setup.authenticate).toHaveBeenCalledOnce());
+
+      setup.host.close();
+      await expect(waiting).rejects.toThrow(/has been closed/);
+      authenticated();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(setup.persist).not.toHaveBeenCalled();
+    });
   });
 });
 
@@ -1317,7 +1461,10 @@ function reconnectTimeouts() {
 }
 
 /** A host on a relay that behaves like the Trustchain one, with fake timers. */
-function pairedHost(timeouts = reconnectTimeouts()) {
+function pairedHost(
+  timeouts = reconnectTimeouts(),
+  wrapHostFactory = (factory: EnrollmentChannelWebSocketFactory) => factory,
+) {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2098-01-01T00:00:00.000Z"));
   const relay = new TestRelay();
@@ -1326,7 +1473,7 @@ function pairedHost(timeouts = reconnectTimeouts()) {
   const host = createAgentEnrollmentChannelHost({
     environment: "production",
     relayBaseUrl: RELAY_URL,
-    webSocketFactory: relay.hostFactory,
+    webSocketFactory: wrapHostFactory(relay.hostFactory),
     timeouts,
   });
   const request = channelRequest(agent, host.binding);
@@ -1455,7 +1602,9 @@ class TestSocket implements EnrollmentChannelWebSocket {
     if (this.closed) return;
     this.closed = true;
     this.relay.left(this);
-    if (this.relay.socketsEmitClose) queueMicrotask(() => this.emit("close"));
+    if (!this.relay.socketsEmitClose) return;
+    if (this.relay.closeEventDelayMs === undefined) queueMicrotask(() => this.emit("close"));
+    else setTimeout(() => this.emit("close"), this.relay.closeEventDelayMs);
   }
 
   /** Closes and reports it in the same task, before handlers queued for earlier frames run. */
@@ -1500,6 +1649,10 @@ class TestRelay {
   refuseNextSockets = 0;
   /** Drop the recipient right after delivering this message, before its handler runs. */
   dropRecipientAfter: string | undefined;
+  /** Report close this long after `close()`, like a real closing handshake. */
+  closeEventDelayMs: number | undefined;
+  /** Runs when a socket sends a frame, before the relay forwards it. */
+  onSend: ((sender: TestSocket, message: string | undefined) => void) | undefined;
   /** Sockets opened through `hostFactory`, in order. */
   readonly hostSockets: TestSocket[] = [];
   private readonly idleTimers = new Map<TestSocket, ReturnType<typeof setTimeout>>();
@@ -1543,6 +1696,7 @@ class TestRelay {
       return;
     }
     const envelope = JSON.parse(data) as { message?: string };
+    this.onSend?.(sender, envelope.message);
     if (envelope.message === this.droppedMessage) return;
     if (this.pairedChannel) {
       this.forwardInRoom(sender, data, envelope.message);
