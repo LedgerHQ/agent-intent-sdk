@@ -494,7 +494,7 @@ describe("agent client", () => {
 describe("agent setup prompt", () => {
   const promptNaming = (app: string) =>
     "Use Ledger wallet-cli (npm package @ledgerhq/wallet-cli) and its agent skill with " +
-    "`wallet-cli skill install`, then follow the skill's Agent Intent section to enroll an " +
+    "`wallet-cli skill install --force`, then follow the skill's Agent Intent section to enroll an " +
     `agent with the app at ${app}.`;
 
   it.each([
