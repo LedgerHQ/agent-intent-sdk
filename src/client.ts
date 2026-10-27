@@ -33,7 +33,7 @@ export const AGENT_INTENT_FRONTEND_URLS: Record<AgentIntentEnvironment, string> 
 };
 
 export function buildAgentSetupPrompt(appUrl: string): string {
-  return `Use Ledger wallet-cli (npm package @ledgerhq/wallet-cli) and its agent skill with \`wallet-cli skill install --force\`, then follow the skill's Agent Intent section to enroll an agent with the app at ${promptAppUrl(appUrl)}.`;
+  return `Use the latest Ledger wallet-cli (npm package @ledgerhq/wallet-cli) and its agent skill with \`wallet-cli skill install --force\`, then follow the skill's Agent Intent section to enroll an agent with the app at ${promptAppUrl(appUrl)}.`;
 }
 
 function promptAppUrl(appUrl: string): string {
