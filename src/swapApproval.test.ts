@@ -33,8 +33,21 @@ describe("parseErc20Approval", () => {
 
   it.each([
     ["another selector", { to: USDC, calldata: `0xa9059cbb${word(SPENDER)}${word("1")}` }],
-    ["a truncated spender word", { to: USDC, calldata: `0x095ea7b3${word(SPENDER).slice(2)}` }],
-    ["a non-hex spender word", { to: USDC, calldata: `0x095ea7b3${"g".repeat(64)}` }],
+    [
+      "a truncated spender word",
+      { to: USDC, calldata: `0x095ea7b3${word(SPENDER).slice(2)}${word("1")}` },
+    ],
+    ["a non-hex spender word", { to: USDC, calldata: `0x095ea7b3${"g".repeat(64)}${word("1")}` }],
+    ["no amount word", { to: USDC, calldata: `0x095ea7b3${word(SPENDER)}` }],
+    [
+      "a non-hex amount word",
+      { to: USDC, calldata: `0x095ea7b3${word(SPENDER)}${"g".repeat(64)}` },
+    ],
+    [
+      "dirty bits above the spender",
+      { to: USDC, calldata: `0x095ea7b3${"1".repeat(24)}${SPENDER.slice(2)}${word("1")}` },
+    ],
+    ["trailing bytes", { to: USDC, calldata: `${APPROVE_CALLDATA}00` }],
     ["no calldata", { to: USDC }],
     ["no transaction", undefined],
     ["a string", APPROVE_CALLDATA],

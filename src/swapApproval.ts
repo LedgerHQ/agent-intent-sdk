@@ -1,5 +1,4 @@
-const ERC20_APPROVE_SELECTOR = "0x095ea7b3";
-const ABI_WORD_HEX_LENGTH = 64;
+const ERC20_APPROVE_CALLDATA = /^0x095ea7b30{24}([0-9a-f]{40})[0-9a-f]{64}$/;
 const EVM_ADDRESS = /^0x[0-9a-f]{40}$/;
 const TOKENS_THAT_REVERT_CHANGING_A_NONZERO_ALLOWANCE: ReadonlySet<string> = new Set([
   "0xdac17f958d2ee523a2206206994597c13d831ec7",
@@ -32,17 +31,12 @@ export function parseErc20Approval(transaction: unknown): Erc20Approval | undefi
   if (typeof transaction !== "object" || transaction === null) return undefined;
   const { to, calldata } = transaction as { to?: unknown; calldata?: unknown };
   if (typeof calldata !== "string") return undefined;
-  const data = calldata.toLowerCase();
-  if (!data.startsWith(ERC20_APPROVE_SELECTOR)) return undefined;
+  const spender = ERC20_APPROVE_CALLDATA.exec(calldata.toLowerCase())?.[1];
+  if (spender === undefined) return undefined;
 
-  const spenderWord = data.slice(
-    ERC20_APPROVE_SELECTOR.length,
-    ERC20_APPROVE_SELECTOR.length + ABI_WORD_HEX_LENGTH,
-  );
-  if (!/^[0-9a-f]{64}$/.test(spenderWord)) return undefined;
   const token = typeof to === "string" ? to.toLowerCase() : "";
   return {
-    spender: `0x${spenderWord.slice(-40)}`,
+    spender: `0x${spender}`,
     ...(EVM_ADDRESS.test(token) ? { token } : {}),
   };
 }
