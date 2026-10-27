@@ -203,6 +203,17 @@ link carried it, so treat it as untrusted text and don't show it as is.
 `AGENT_NAME_MAX_LENGTH` and `AGENT_DESCRIPTION_MAX_LENGTH` export the name and
 description limits the validators apply.
 
+## Agent setup prompt
+
+The prompt a user pastes into their agent to enroll it with the app they are on:
+
+```ts
+const prompt = buildAgentSetupPrompt(window.location.origin);
+```
+
+An https app is named by its host (`app.agents.ledger.com`), an http one by its full origin
+(`http://localhost:5173`). The wallet-cli skill holds the enrollment steps.
+
 ## Encrypted enrollment completion
 
 Version-2 enrollment requests bind a one-use ephemeral relay host key into the

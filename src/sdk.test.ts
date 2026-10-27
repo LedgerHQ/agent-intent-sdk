@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import { buildAttestation, buildUnsignedChallengeTlv, createAgentTokenProvider } from "./auth.ts";
 import { AgentIntentSdkError, bytesToHex, hexToBytes } from "./bytes.ts";
 import {
+  AGENT_INTENT_FRONTEND_URLS,
   AgentIntentHttpError,
+  buildAgentSetupPrompt,
   createAgentIntentClient,
   staticAccessTokenProvider,
 } from "./client.ts";
@@ -485,6 +487,32 @@ describe("agent client", () => {
 
     await expect(client.createSendIntent(SEND)).resolves.toBe(
       "https://app.agents.ledger.com/intents/123",
+    );
+  });
+});
+
+describe("agent setup prompt", () => {
+  const promptNaming = (app: string) =>
+    "Use Ledger wallet-cli (npm package @ledgerhq/wallet-cli) and its agent skill with " +
+    "`wallet-cli skill install`, then follow the skill's Agent Intent section to enroll an " +
+    `agent with the app at ${app}.`;
+
+  it.each([
+    ["the production app by its host", "https://app.agents.ledger.com", "app.agents.ledger.com"],
+    [
+      "the staging app by its host",
+      AGENT_INTENT_FRONTEND_URLS.staging,
+      "app.agents.ledger-test.com",
+    ],
+    ["another https deploy by its host", "https://preview.example:8443", "preview.example:8443"],
+    ["local dev by its http origin", "http://localhost:5173", "http://localhost:5173"],
+  ])("names %s", (_case, appUrl, shown) => {
+    expect(buildAgentSetupPrompt(appUrl)).toBe(promptNaming(shown));
+  });
+
+  it("rejects an app URL that isn't http(s)", () => {
+    expect(() => buildAgentSetupPrompt("file:///index.html")).toThrow(
+      'The Agent Intent app URL must be http(s), got "file:///index.html".',
     );
   });
 });
