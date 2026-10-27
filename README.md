@@ -104,6 +104,32 @@ const deeplink = await client.createSwapIntent({
 `arc_testnet`). `fromAmount` and `toAmount` are human-unit decimal strings
 (`"0.5"` ETH, not wei), signed as given: `"1.5"` and `"1.50"` sign differently.
 
+### Swap token approvals
+
+wallet-cli and the Agent Intent app use the same rules to decide whether the app can send
+the ERC-20 approval a Swap API quote needs:
+
+```ts
+const approval = parseErc20Approval(tokenAllowanceData.approvalTransaction);
+const approvable = canApproveSwapQuote(
+  {
+    approvalRequired: isSwapApprovalRequired({
+      isApproved: tokenAllowanceData.isApproved,
+      isTokenApprovalRequired: tags.isTokenApprovalRequired,
+    }),
+    permitRequired,
+    allowanceSpender: approval?.spender,
+    allowanceToken: approval?.token,
+    allowanceAmount: parseBaseUnits(tokenAllowanceData.approvedAmount),
+  },
+  { network: "ethereum", swapsWithCalldata, soldTokenContract },
+);
+```
+
+`parseBaseUnits` takes decimal digits or a safe integer only, so `"0x0"` is not a
+zero allowance. USDT also needs a zero allowance; `needsAllowanceReset` says when it
+must be reset first.
+
 ## List the agent's intents
 
 ```ts

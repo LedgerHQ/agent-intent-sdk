@@ -27,3 +27,4 @@ export {
   type AgentLinkIssue,
   type MalformedAgentLink,
 } from "./requestFields.ts";
+export * from "./swapApproval.ts";
