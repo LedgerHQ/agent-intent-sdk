@@ -256,17 +256,18 @@ was lost (for example, the relay dropped the socket during device approval).
 If a delivery fails, for example because `authenticate` rejected it or the
 acknowledgement timed out, `deliver()` may be retried on the same candidate. Each
 retry opens a fresh session with a new ephemeral key. A retry fails once the host
-has finished, closed, timed out, or stopped reconnecting.
+has finished, closed, or timed out.
 
 As observed (this is not a documented relay contract), the Trustchain relay runs
 a channel as one host and one candidate: it refuses a third socket and, when
 either side leaves, closes the other about a second later. Except while a
 completion is being authenticated or persisted, the host then reopens its socket
-on the same key at once, so a reviewer who leaves the page can come back while
-the request is unexpired. A candidate that connects in the second or two before
-the host is back is rejected by the relay with "The enrollment relay rejected the
-session."; a `connect()` or `deliver()` retry a couple of seconds later succeeds
-once the host has reconnected.
+on the same key, at once after the first drop and with a backoff after later
+ones (see [Security and timeouts](#security-and-timeouts)), so a reviewer who
+leaves the page can come back while the request is unexpired. A candidate that
+connects before the host is back is rejected by the relay with "The enrollment
+relay rejected the session."; a `connect()` or `deliver()` retry a few seconds
+later succeeds once the host has reconnected.
 
 ### Recovery
 
@@ -311,27 +312,29 @@ handshake and the delivered completion (device approval) is bounded only by
 the candidate. Applications may override these with the `timeouts` option.
 While a session is open, both sides send the relay a text `ping` every 60
 seconds, because the Trustchain relay drops a client after 5 minutes without a
-frame sent to it. A failed `authenticate` call rejects only that delivery, so
-the same or a later candidate can complete the same bounded host session. A
-persistence failure closes the session without acknowledging. If enrollment was
-committed before delivery failed, re-enroll the agent with a channel-bound
-recovery request.
+frame sent to it. The host also expects a frame back within 10 seconds of each
+ping, normally the relay's `pong`; otherwise it treats the socket as dropped,
+closes it, and reconnects as described below. A failed `authenticate` call
+rejects only that delivery, so the same or a later candidate can complete the
+same bounded host session. A persistence failure closes the session without
+acknowledging. If enrollment was committed before delivery failed, re-enroll the
+agent with a channel-bound recovery request.
 
-The host reopens its relay socket at most 5 times in a row; a socket that stayed
-open for at least 60 seconds before it was dropped resets that count, so drops
-spread over a long wait do not add up. If a reopened socket fails before
-connecting, the host retries after 1, 2 and 4 seconds, then every 5 seconds, and
-gives up at the first retry that fails 60 seconds or more after the first
-failure. Both 60-second windows use a monotonic clock, so a wall-clock change
-does not move them. Reconnecting stops once the signed request has expired by
-the wall clock, which also covers a laptop that slept past the expiry. A
+The host does not limit how often it reopens its relay socket. It reopens at
+once after the first drop, then after 1, 2 and 4 seconds, then every 5 seconds;
+a reopened socket that fails before connecting, a handshake timeout, and a
+missed ping reply each take the next step of the same backoff. A socket that
+stayed open for at least 60 seconds before it was dropped restarts the backoff.
+That window uses a monotonic clock, so a wall-clock change does not move it. A
 candidate that does not finish the handshake within `handshakeTimeoutMs` no
 longer fails the host: the host closes that socket and reopens it like a relay
-drop, with a fresh wait for the next candidate, and this counts toward the 5
-reconnects. Reconnecting never extends `completionTimeoutMs` or the request
-expiry, and a socket lost while a completion is being authenticated or persisted
-still fails the session. Both limits fail with an error that starts with
-"Enrollment relay closed before completion was acknowledged".
+drop, with a fresh wait for the next candidate. Reconnecting never extends
+`completionTimeoutMs` or the request expiry. The host stops only when the
+request expires, `completionTimeoutMs` elapses, `close()` is called, or a socket
+is lost while a completion is being authenticated or persisted, which fails the
+session. Before each reopen the host also checks the signed request expiry
+against the wall clock, so it does not reconnect after a laptop slept past the
+expiry.
 
 The channel sends only the agent public key, App-18 Trustchain ID, and safe
 App-16 environment/root/path references. It must never carry a serialized
