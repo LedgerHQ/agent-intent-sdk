@@ -5,8 +5,10 @@ export * from "./completion.ts";
 export * from "./enrollment.ts";
 export {
   AGENT_ENROLLMENT_CHANNEL_DEFAULT_TIMEOUTS,
+  AgentEnrollmentRejectedError,
   createAgentEnrollmentChannelCandidate,
   createAgentEnrollmentChannelHost,
+  isAgentEnrollmentRejectedError,
   type AgentEnrollmentChannelCandidate,
   type AgentEnrollmentChannelCompletion,
   type AgentEnrollmentChannelHost,
