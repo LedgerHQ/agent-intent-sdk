@@ -33,14 +33,12 @@ const RELAY_KEEPALIVE_PING = "ping";
 const RELAY_KEEPALIVE_PONG = "pong";
 
 // The relay closes the host socket once its candidate leaves. The host reopens on the same key
-// up to a limit of quick reconnects; a socket that stayed open long enough resets the count.
-// A reopened socket that fails before it connects is retried until reopening has failed for
-// a minute. Both windows use the monotonic clock, so a wall-clock change does not move them.
-const HOST_RECONNECT_LIMIT = 5;
+// until the request expires: at once, then after 1, 2 and 4 seconds, then every 5 seconds. A
+// socket that stayed open for a minute before it dropped restarts that backoff; the minute is
+// measured on the monotonic clock, so a wall-clock change does not move it.
+const HOST_RECONNECT_DELAYS_MS = [0, 1_000, 2_000, 4_000] as const;
+const HOST_RECONNECT_MAX_DELAY_MS = 5_000;
 const HOST_RECONNECT_STABLE_MS = 60_000;
-const HOST_RECONNECT_RETRY_DELAYS_MS = [1_000, 2_000, 4_000] as const;
-const HOST_RECONNECT_RETRY_INTERVAL_MS = 5_000;
-const HOST_RECONNECT_GIVE_UP_MS = 60_000;
 
 type RelayMessageName =
   | "InitiateHandshake"
@@ -265,9 +263,7 @@ function runHost(
     // Set once the session resolves or fails; a handler resuming after an await can still
     // move `state`, so reconnects and timers check this instead.
     let settled = false;
-    let reconnects = 0;
-    let failedOpens = 0;
-    let failedOpenSince: number | undefined;
+    let attempts = 0;
     let loseSocket: (message: string) => void = () => undefined;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -330,22 +326,6 @@ function runHost(
     // Stops timers and keepalive itself rather than relying on the socket's close event.
     close = () => fail(channelError("This enrollment host session has been closed."));
     armCandidateTimer();
-    const failedOpen = () => {
-      failedOpens += 1;
-      failedOpenSince ??= performance.now();
-      if (performance.now() - failedOpenSince >= HOST_RECONNECT_GIVE_UP_MS) {
-        fail(
-          channelError(
-            `Enrollment relay closed before completion was acknowledged; the host could not reopen its relay connection for ${HOST_RECONNECT_GIVE_UP_MS / 1_000} seconds.`,
-          ),
-        );
-        return;
-      }
-      reconnectTimer = setTimeout(
-        openReconnect,
-        HOST_RECONNECT_RETRY_DELAYS_MS[failedOpens - 1] ?? HOST_RECONNECT_RETRY_INTERVAL_MS,
-      );
-    };
     const openReconnect = () => {
       if (settled) return;
       // Timers stop while a laptop sleeps, so the wall clock decides whether the request expired.
@@ -358,20 +338,25 @@ function runHost(
         source = openSocket();
         attach(source, true);
       } catch {
-        // A factory or socket that throws counts as a failed open; the queue must not reject.
+        // A factory or socket that throws is retried like a failed open; the queue must not reject.
         try {
           source?.close();
         } catch {
           // The socket was never attached, so nothing reports its failure.
         }
-        failedOpen();
+        reconnect();
       }
     };
     const reconnect = () => {
       if (settled) return;
       // A drop before any candidate keeps the running wait for the first one.
       if (state !== "connected") resetCandidate();
-      openReconnect();
+      const delay = HOST_RECONNECT_DELAYS_MS[attempts] ?? HOST_RECONNECT_MAX_DELAY_MS;
+      attempts += 1;
+      // The relay rejects a candidate that arrives while the host is away, so the first
+      // reopen does not wait for a timer.
+      if (delay === 0) openReconnect();
+      else reconnectTimer = setTimeout(openReconnect, delay);
     };
     const attach = (source: EnrollmentChannelWebSocket, reopened: boolean) => {
       let opened = false;
@@ -388,34 +373,17 @@ function runHost(
         } catch {
           // A socket that cannot close is already gone.
         }
-        if (!opened && reopened) {
-          failedOpen();
-          return;
-        }
-        if (!opened || state === "authenticating" || state === "persisting") {
+        if ((!opened && !reopened) || state === "authenticating" || state === "persisting") {
           fail(channelError(message));
           return;
         }
-        if (performance.now() - openedAt >= HOST_RECONNECT_STABLE_MS) reconnects = 0;
-        if (reconnects >= HOST_RECONNECT_LIMIT) {
-          fail(
-            channelError(
-              `Enrollment relay closed before completion was acknowledged; the host stopped reconnecting after ${HOST_RECONNECT_LIMIT} attempts.`,
-            ),
-          );
-          return;
-        }
-        reconnects += 1;
+        if (opened && performance.now() - openedAt >= HOST_RECONNECT_STABLE_MS) attempts = 0;
         // Queued so a handler already running for this socket finishes before the reset.
         messageQueue = messageQueue.then(reconnect);
       };
       source.addEventListener("open", () => {
         opened = true;
         openedAt = performance.now();
-        if (reopened) {
-          failedOpens = 0;
-          failedOpenSince = undefined;
-        }
         if (source === socket && !settled) stopKeepAlive = keepRelayAlive(source);
       });
       source.addEventListener("error", () => onLost("Enrollment relay connection failed."));
