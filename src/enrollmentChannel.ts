@@ -36,9 +36,10 @@ const RELAY_KEEPALIVE_PONG = "pong";
 const RELAY_PONG_TIMEOUT_MS = 10_000;
 
 // The relay closes the host socket once its candidate leaves. The host reopens on the same key
-// until the request expires: at once, then after 1, 2 and 4 seconds, then every 5 seconds. A
-// socket that stayed open for a minute before it dropped restarts that backoff; the minute is
-// measured on the monotonic clock, so a wall-clock change does not move it.
+// until the request expires or the completion timeout elapses: at once, then after 1, 2 and 4
+// seconds, then every 5 seconds. A socket that stayed open for a minute before it dropped
+// restarts that backoff; the minute is measured on the monotonic clock, so a wall-clock change
+// does not move it.
 const HOST_RECONNECT_DELAYS_MS = [0, 1_000, 2_000, 4_000] as const;
 const HOST_RECONNECT_MAX_DELAY_MS = 5_000;
 const HOST_RECONNECT_STABLE_MS = 60_000;

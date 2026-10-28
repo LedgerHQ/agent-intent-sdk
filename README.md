@@ -266,8 +266,10 @@ on the same key, at once after the first drop and with a backoff after later
 ones (see [Security and timeouts](#security-and-timeouts)), so a reviewer who
 leaves the page can come back while the request is unexpired. A candidate that
 connects before the host is back is rejected by the relay with "The enrollment
-relay rejected the session."; a `connect()` or `deliver()` retry a few seconds
-later succeeds once the host has reconnected.
+relay rejected the session."; a `connect()` or `deliver()` retry succeeds once
+the host has reconnected. After repeated quick drops the host can be away for up
+to 5 seconds of backoff plus the relay's close delay of about 1.5 seconds, so
+retry for at least 7 seconds.
 
 ### Recovery
 
@@ -321,20 +323,28 @@ acknowledging. If enrollment was committed before delivery failed, re-enroll the
 agent with a channel-bound recovery request.
 
 The host does not limit how often it reopens its relay socket. It reopens at
-once after the first drop, then after 1, 2 and 4 seconds, then every 5 seconds;
-a reopened socket that fails before connecting, a handshake timeout, and a
-missed ping reply each take the next step of the same backoff. A socket that
-stayed open for at least 60 seconds before it was dropped restarts the backoff.
-That window uses a monotonic clock, so a wall-clock change does not move it. A
-candidate that does not finish the handshake within `handshakeTimeoutMs` no
-longer fails the host: the host closes that socket and reopens it like a relay
-drop, with a fresh wait for the next candidate. Reconnecting never extends
-`completionTimeoutMs` or the request expiry. The host stops only when the
-request expires, `completionTimeoutMs` elapses, `close()` is called, or a socket
-is lost while a completion is being authenticated or persisted, which fails the
-session. Before each reopen the host also checks the signed request expiry
-against the wall clock, so it does not reconnect after a laptop slept past the
-expiry.
+once after the first drop, then after 1, 2 and 4 seconds, then every 5 seconds.
+A reopened socket that fails before connecting, a handshake timeout, and a
+missed ping reply follow the same backoff. A socket that stayed open for at
+least 60 seconds before it was lost restarts the backoff; a missed ping reply is
+detected at least 70 seconds after the socket opened, so the host reopens at
+once after one. That window uses a monotonic clock, so a wall-clock change does
+not move it. A candidate that does not finish the handshake within
+`handshakeTimeoutMs` no longer fails the host: the host closes that socket and
+reopens it like a relay drop, with a fresh wait for the next candidate.
+Reconnecting never extends `completionTimeoutMs` or the request expiry. The host
+stops and fails the session when:
+
+- the request expires or `completionTimeoutMs` elapses;
+- no candidate connects within `candidateTimeoutMs`, a wait that restarts on
+  each reconnect after a candidate had connected;
+- `close()` is called;
+- the initial socket fails before it opens;
+- persistence fails, or a socket is lost while a completion is being
+  authenticated or persisted.
+
+Before each reopen the host also checks the signed request expiry against the
+wall clock, so it does not reconnect after a laptop slept past the expiry.
 
 The channel sends only the agent public key, App-18 Trustchain ID, and safe
 App-16 environment/root/path references. It must never carry a serialized
