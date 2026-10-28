@@ -1046,6 +1046,25 @@ describe("encrypted enrollment channel", () => {
       expect(setup.persist).toHaveBeenCalledOnce();
     });
 
+    it("closes a host socket that errored without closing", async () => {
+      const setup = pairedHost();
+      const { waiting } = setup.start();
+      await setup.candidate().connect();
+
+      setup.relay.hostSockets[0]?.emit("error");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(setup.relay.hostSockets[0]?.closed).toBe(true);
+      expect(setup.relay.hostSockets).toHaveLength(2);
+      // The relay evicts the candidate of the abandoned socket, so it cannot hold the channel.
+      await vi.advanceTimersByTimeAsync(setup.relay.peerCloseDelayMs);
+      expect(setup.relay.sockets[1]?.closed).toBe(true);
+
+      await expect(
+        setup.candidate().deliver(completionFor(setup.agent.publicKey, "after-error")),
+      ).resolves.toBeUndefined();
+      await expect(waiting).resolves.toMatchObject({ trustchainId: "after-error" });
+    });
+
     it("fails on the sixth drop after five reconnects", async () => {
       const setup = pairedHost();
       const { waiting, isSettled } = setup.start();

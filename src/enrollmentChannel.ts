@@ -294,10 +294,9 @@ function runHost(
       clearTimeout(phaseTimer);
       // A candidate that stops answering is dropped like a relay drop, so another can connect.
       // The lost path runs directly because some sockets never report their own close.
-      phaseTimer = deadlineTimer(timeouts.handshakeTimeoutMs, request.expiresAt, () => {
-        loseSocket("Enrollment channel handshake timed out.");
-        socket.close();
-      });
+      phaseTimer = deadlineTimer(timeouts.handshakeTimeoutMs, request.expiresAt, () =>
+        loseSocket("Enrollment channel handshake timed out."),
+      );
     };
     completionTimer = deadlineTimer(timeouts.completionTimeoutMs, request.expiresAt, () =>
       fail(channelError("Enrollment completion timed out.")),
@@ -382,6 +381,13 @@ function runHost(
         if (lost || source !== socket || settled) return;
         lost = true;
         stopKeepAlive();
+        // A socket that only reported an error may still be open, and the relay keeps its
+        // candidate until it closes.
+        try {
+          source.close();
+        } catch {
+          // A socket that cannot close is already gone.
+        }
         if (!opened && reopened) {
           failedOpen();
           return;
