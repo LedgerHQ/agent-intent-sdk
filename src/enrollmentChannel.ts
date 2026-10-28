@@ -31,6 +31,9 @@ const CHANNEL_DOMAIN = new TextEncoder().encode("agent-intent:enrollment-channel
 const RELAY_KEEPALIVE_INTERVAL_MS = 60_000;
 const RELAY_KEEPALIVE_PING = "ping";
 const RELAY_KEEPALIVE_PONG = "pong";
+// A socket can stay half-open without reporting close; the host treats a ping that gets no
+// frame back within this window as a drop.
+const RELAY_PONG_TIMEOUT_MS = 10_000;
 
 // The relay closes the host socket once its candidate leaves. The host reopens on the same key
 // until the request expires: at once, then after 1, 2 and 4 seconds, then every 5 seconds. A
@@ -384,7 +387,11 @@ function runHost(
       source.addEventListener("open", () => {
         opened = true;
         openedAt = performance.now();
-        if (source === socket && !settled) stopKeepAlive = keepRelayAlive(source);
+        if (source === socket && !settled) {
+          stopKeepAlive = keepRelayAlive(source, () =>
+            onLost("Enrollment relay closed before completion was acknowledged."),
+          );
+        }
       });
       source.addEventListener("error", () => onLost("Enrollment relay connection failed."));
       source.addEventListener("close", () =>
@@ -799,15 +806,26 @@ function send(socket: EnrollmentChannelWebSocket, envelope: RelayEnvelope): void
 }
 
 /** Pings the relay until the returned stop function runs. */
-function keepRelayAlive(socket: EnrollmentChannelWebSocket): () => void {
+function keepRelayAlive(socket: EnrollmentChannelWebSocket, onSilent?: () => void): () => void {
+  let deadline: ReturnType<typeof setTimeout> | undefined;
   const timer = setInterval(() => {
     try {
       socket.send(RELAY_KEEPALIVE_PING);
     } catch {
       // A socket that cannot send is closing; its close and error listeners report the failure.
     }
+    if (onSilent) {
+      clearTimeout(deadline);
+      deadline = setTimeout(onSilent, RELAY_PONG_TIMEOUT_MS);
+    }
   }, RELAY_KEEPALIVE_INTERVAL_MS);
-  return () => clearInterval(timer);
+  // Any frame proves the socket is alive, not only the pong. The socket type has no
+  // removeEventListener; once stopped, this listener only clears a cleared timer.
+  if (onSilent) socket.addEventListener("message", () => clearTimeout(deadline));
+  return () => {
+    clearInterval(timer);
+    clearTimeout(deadline);
+  };
 }
 
 function isRelayKeepAliveReply(data: unknown): boolean {

@@ -1743,6 +1743,110 @@ describe("encrypted enrollment channel", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(setup.persist).not.toHaveBeenCalled();
     });
+
+    it("keeps pinging on a reopened socket", async () => {
+      const setup = pairedHost();
+      setup.relay.idleTimeoutMs = 5 * 60_000;
+      setup.start();
+      await setup.leave();
+      const pings = setup.relay.pings;
+
+      await vi.advanceTimersByTimeAsync(7 * 60_000);
+      expect(setup.relay.hostSockets).toHaveLength(2);
+      expect(setup.relay.hostSockets[1]?.closed).toBe(false);
+      expect(setup.relay.pings).toBeGreaterThan(pings);
+    });
+
+    it("treats a ping left unanswered for 10 seconds as a drop", async () => {
+      const setup = pairedHost();
+      // Like a half-open socket: pings leave, nothing comes back, and no close is reported.
+      setup.relay.answerPings = false;
+      const { waiting } = setup.start();
+
+      // The first ping goes out at 60 s.
+      await vi.advanceTimersByTimeAsync(70_000 - 1);
+      expect(setup.relay.hostSockets).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(setup.relay.hostSockets[0]?.closed).toBe(true);
+      expect(setup.relay.hostSockets).toHaveLength(2);
+
+      setup.relay.answerPings = true;
+      await expect(
+        setup.candidate().deliver(completionFor(setup.agent.publicKey, "after-silence")),
+      ).resolves.toBeUndefined();
+      await expect(waiting).resolves.toMatchObject({ trustchainId: "after-silence" });
+    });
+
+    it("keeps a socket whose pongs arrive", async () => {
+      const setup = pairedHost();
+      setup.start();
+
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+      expect(setup.relay.pings).toBe(3);
+      expect(setup.relay.hostSockets).toHaveLength(1);
+      expect(setup.relay.hostSockets[0]?.closed).toBe(false);
+    });
+
+    it("keeps a socket that receives any other frame after a ping", async () => {
+      const setup = pairedHost();
+      setup.relay.answerPings = false;
+      setup.start();
+
+      await vi.advanceTimersByTimeAsync(65_000);
+      await setup.candidate().connect();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(setup.relay.hostSockets).toHaveLength(1);
+      expect(setup.relay.hostSockets[0]?.closed).toBe(false);
+    });
+
+    it("fails when a ping goes unanswered while a completion is authenticated", async () => {
+      const setup = pairedHost();
+      setup.authenticate.mockImplementation(() => new Promise<undefined>(() => undefined));
+      const { waiting } = setup.start();
+      void setup
+        .candidate()
+        .deliver(completionFor(setup.agent.publicKey, "trusted"))
+        .catch(() => undefined);
+      await vi.waitFor(() => expect(setup.authenticate).toHaveBeenCalledOnce());
+      setup.relay.answerPings = false;
+      const result = expect(waiting).rejects.toMatchObject({
+        message: "Enrollment relay closed before completion was acknowledged.",
+      });
+
+      await vi.advanceTimersByTimeAsync(70_000);
+      await result;
+      expect(setup.relay.hostSockets).toHaveLength(1);
+      expect(setup.relay.hostSockets[0]?.closed).toBe(true);
+    });
+
+    it("clears the reply deadline of a socket the relay dropped", async () => {
+      const setup = pairedHost();
+      setup.relay.answerPings = false;
+      const { waiting } = setup.start();
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      setup.relay.hostSockets[0]?.close();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(setup.relay.hostSockets).toHaveLength(2);
+      setup.relay.answerPings = true;
+      await expect(
+        setup.candidate().deliver(completionFor(setup.agent.publicKey, "after-drop")),
+      ).resolves.toBeUndefined();
+      await expect(waiting).resolves.toMatchObject({ trustchainId: "after-drop" });
+      await vi.advanceTimersByTimeAsync(setup.relay.peerCloseDelayMs);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("clears the reply deadline when the host is closed", async () => {
+      const setup = pairedHost();
+      setup.relay.answerPings = false;
+      const { waiting } = setup.start();
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      setup.host.close();
+      await expect(waiting).rejects.toThrow(/has been closed/);
+      expect(vi.getTimerCount()).toBe(0);
+    });
   });
 });
 
@@ -1971,6 +2075,8 @@ class TestRelay {
   /** Like the Trustchain relay: drop a socket after this long without a frame sent to it. */
   idleTimeoutMs: number | undefined;
   pings = 0;
+  /** Answer each text ping with a pong; turn off to model a half-open socket. */
+  answerPings = true;
   /** Deliver frames as Buffers, like some Node WebSocket clients. */
   binaryFrames = false;
   /** Whether a closed socket emits a close event; custom factories might not. */
@@ -2034,7 +2140,7 @@ class TestRelay {
   forward(sender: TestSocket, data: string): void {
     if (data === "ping") {
       this.pings += 1;
-      this.deliver(sender, "pong");
+      if (this.answerPings) this.deliver(sender, "pong");
       return;
     }
     const envelope = JSON.parse(data) as { message?: string };
