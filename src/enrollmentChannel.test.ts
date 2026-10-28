@@ -1685,6 +1685,22 @@ describe("encrypted enrollment channel", () => {
       expect(vi.getTimerCount()).toBe(0);
     });
 
+    it("does not ping from a reopened socket that opens after it failed", async () => {
+      const setup = pairedHost();
+      const { waiting } = setup.start();
+      setup.relay.refuseNextSockets = 1;
+      await setup.leave();
+      setup.relay.hostSockets[1]?.emit("open");
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(
+        setup.candidate().deliver(completionFor(setup.agent.publicKey, "late-open")),
+      ).resolves.toBeUndefined();
+      await expect(waiting).resolves.toMatchObject({ trustchainId: "late-open" });
+      await vi.advanceTimersByTimeAsync(setup.relay.peerCloseDelayMs);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
     it("retries a reconnect whose socket factory throws", async () => {
       let calls = 0;
       const setup = pairedHost(reconnectTimeouts(), (factory) => (url) => {
@@ -1777,6 +1793,32 @@ describe("encrypted enrollment channel", () => {
       await expect(waiting).resolves.toMatchObject({ trustchainId: "after-silence" });
     });
 
+    it("treats an unanswered ping on a reopened socket as a drop", async () => {
+      const setup = pairedHost();
+      setup.start();
+      await setup.leave();
+      setup.relay.answerPings = false;
+
+      await vi.advanceTimersByTimeAsync(70_000 - 1);
+      expect(setup.relay.hostSockets).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(setup.relay.hostSockets[1]?.closed).toBe(true);
+      expect(setup.relay.hostSockets).toHaveLength(3);
+    });
+
+    it("expects a reply to every ping, not only the first", async () => {
+      const setup = pairedHost();
+      setup.start();
+      await vi.advanceTimersByTimeAsync(60_000);
+      setup.relay.answerPings = false;
+
+      await vi.advanceTimersByTimeAsync(70_000 - 1);
+      expect(setup.relay.hostSockets).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(setup.relay.hostSockets[0]?.closed).toBe(true);
+      expect(setup.relay.hostSockets).toHaveLength(2);
+    });
+
     it("keeps a socket whose pongs arrive", async () => {
       const setup = pairedHost();
       setup.start();
@@ -1799,7 +1841,7 @@ describe("encrypted enrollment channel", () => {
       expect(setup.relay.hostSockets[0]?.closed).toBe(false);
     });
 
-    it("fails when a ping goes unanswered while a completion is authenticated", async () => {
+    it("fails when a ping goes unanswered while a completion is being authenticated", async () => {
       const setup = pairedHost();
       setup.authenticate.mockImplementation(() => new Promise<undefined>(() => undefined));
       const { waiting } = setup.start();
