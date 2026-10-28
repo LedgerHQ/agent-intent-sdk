@@ -387,7 +387,7 @@ function runHost(
       source.addEventListener("open", () => {
         opened = true;
         openedAt = performance.now();
-        if (source === socket && !settled) {
+        if (source === socket && !settled && !lost) {
           stopKeepAlive = keepRelayAlive(source, () =>
             onLost("Enrollment relay closed before completion was acknowledged."),
           );
