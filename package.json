@@ -1,6 +1,6 @@
 {
   "name": "@ledgerhq/agent-intent-sdk",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Headless TypeScript SDK for Ledger Agent Intent",
   "keywords": [
     "agent",
