@@ -2,7 +2,7 @@
   "$schema": "https://unpkg.com/@changesets/config@4.0.0/schema.json",
   "changelog": ["@changesets/changelog-github", { "repo": "LedgerHQ/agent-intent-sdk" }],
   "commit": false,
-  "access": "restricted",
+  "access": "public",
   "baseBranch": "main",
   "format": "oxfmt",
   "updateInternalDependencies": "patch"

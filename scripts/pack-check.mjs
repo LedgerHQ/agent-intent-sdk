@@ -22,6 +22,7 @@ try {
   const entries = run("tar", ["-tf", tarball], root).split("\n");
   for (const required of [
     "package/package.json",
+    "package/LICENSE",
     "package/README.md",
     "package/dist/index.js",
     "package/dist/index.d.ts",

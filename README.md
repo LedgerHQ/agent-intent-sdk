@@ -13,14 +13,9 @@ state dependency. Secret-key persistence is deliberately left to consumers.
 
 ## Installation
 
-This internal package is published to Ledger's JFrog npm registry:
-
 ```sh
 pnpm add @ledgerhq/agent-intent-sdk
 ```
-
-Your npm client must already be authenticated and configured for the Ledger
-registry.
 
 ## Requirements
 
@@ -333,3 +328,7 @@ pnpm verify
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for branch, changeset, review, and
 release conventions.
+
+## License
+
+Apache-2.0. See [LICENSE](./LICENSE).
