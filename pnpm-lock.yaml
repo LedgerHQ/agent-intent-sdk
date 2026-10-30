@@ -173,8 +173,8 @@ importers:
         specifier: 2.4.0
         version: 2.4.0
       bs58:
-        specifier: 4.0.1
-        version: 4.0.1
+        specifier: 6.0.0
+        version: 6.0.0
     devDependencies:
       '@changesets/changelog-github':
         specifier: 1.0.1
@@ -860,8 +860,11 @@ packages:
   base-x@3.0.11:
     resolution: {integrity: sha512-xz7wQ8xDhdyP7tQxwdteLYeFfS68tSMNCZ/Y37WJ4bhGfKPpqEIlmIyueQHqOyoPhE6xNUqjzRr8ra0eF9VRvA==}
 
-  bs58@4.0.1:
-    resolution: {integrity: sha512-Ok3Wdf5vOIlBrgCvTq96gBkJw+JUEzdBgyaza5HLtPm7yTHkjRy8+JzNyHF7BHa0bNWOQIp3m5YF0nnFcOIKLw==}
+  base-x@5.0.1:
+    resolution: {integrity: sha512-M7uio8Zt++eg3jPj+rHMfCC+IuygQHHCOU+IYsVtik6FWjuYpVt/+MRKcgsAMHh8mMFAwnB+Bs+mTrFiXjMzKg==}
+
+  bs58@6.0.0:
+    resolution: {integrity: sha512-PD0wEnEYg6ijszw/u8s+iI3H17cTymlrwkKhDhPZq+Sokl3AU4htyBFTjAeNAlCCmg0f53g6ih3jATyCKftTfw==}
 
   cac@7.0.0:
     resolution: {integrity: sha512-tixWYgm5ZoOD+3g6UTea91eow5z6AAHaho3g0V9CNSNb45gM8SmflpAc+GRd1InC4AqN/07Unrgp56Y94N9hJQ==}
@@ -1664,9 +1667,11 @@ snapshots:
     dependencies:
       safe-buffer: 5.2.1
 
-  bs58@4.0.1:
+  base-x@5.0.1: {}
+
+  bs58@6.0.0:
     dependencies:
-      base-x: 3.0.11
+      base-x: 5.0.1
 
   cac@7.0.0: {}
 
