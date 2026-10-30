@@ -8,9 +8,18 @@
     "ledger",
     "sdk"
   ],
-  "license": "UNLICENSED",
+  "homepage": "https://github.com/LedgerHQ/agent-intent-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/LedgerHQ/agent-intent-sdk/issues"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LedgerHQ/agent-intent-sdk.git"
+  },
   "files": [
     "dist",
+    "LICENSE",
     "README.md"
   ],
   "type": "module",
@@ -23,7 +32,7 @@
     "./package.json": "./package.json"
   },
   "publishConfig": {
-    "access": "restricted"
+    "access": "public"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/stamp-version.mjs",
