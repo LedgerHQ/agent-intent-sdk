@@ -103,10 +103,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Builds dist/, which the tarball ships.
-      - name: Verify
-        run: pnpm verify
-
       - name: Require publish registry
         env:
           PUBLISH_REGISTRY: ${{ vars.ARTIFACTORY_PUBLISH_URL }}
@@ -135,6 +131,16 @@ jobs:
             echo "file=$PLAN_FILE"
             echo "count=$count"
           } >> "$GITHUB_OUTPUT"
+
+      # Builds dist/, which the tarball ships. Skipped when nothing is published: tagging
+      # and the GitHub release check do not need it, and ci.yml already verified the commit.
+      # pack:check installs the tarball's dependencies, which must come from npmjs.com like
+      # the install above, not from the JFrog publish registry now set in ~/.npmrc.
+      - name: Verify
+        if: ${{ steps.plan.outputs.count != '0' }}
+        env:
+          pnpm_config_registry: https://registry.npmjs.org/
+        run: pnpm verify
 
       - name: Pack
         if: ${{ steps.plan.outputs.count != '0' }}

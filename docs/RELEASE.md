@@ -35,10 +35,10 @@ public Sigstore transparency log.
 2. Merging the version pull request consumes changesets, updates the version,
    and writes `CHANGELOG.md`.
 3. The resulting push to `main` has no pending changesets, so the same
-   workflow verifies the package, checks against the JFrog publish registry
-   whether the current version is missing, packs it, attests the tarball with
-   SLSA provenance, publishes that exact tarball, then creates a tag and GitHub
-   release.
+   workflow checks against the JFrog publish registry whether the current
+   version is missing. If it is, the workflow verifies the package, packs it,
+   attests the tarball with SLSA provenance and publishes that exact tarball.
+   It then creates the tag and GitHub release if they are missing.
 
 Changesets tags this single-package repository as `v<version>`.
 
