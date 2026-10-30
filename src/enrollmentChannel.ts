@@ -31,6 +31,18 @@ const CHANNEL_DOMAIN = new TextEncoder().encode("agent-intent:enrollment-channel
 const RELAY_KEEPALIVE_INTERVAL_MS = 60_000;
 const RELAY_KEEPALIVE_PING = "ping";
 const RELAY_KEEPALIVE_PONG = "pong";
+// A socket can stay half-open without reporting close; the host treats a ping that gets no
+// frame back within this window as a drop.
+const RELAY_PONG_TIMEOUT_MS = 10_000;
+
+// The relay closes the host socket once its candidate leaves. The host reopens on the same key
+// until the request expires or the completion timeout elapses: at once, then after 1, 2 and 4
+// seconds, then every 5 seconds. A socket that stayed open for a minute before it dropped
+// restarts that backoff; the minute is measured on the monotonic clock, so a wall-clock change
+// does not move it.
+const HOST_RECONNECT_DELAYS_MS = [0, 1_000, 2_000, 4_000] as const;
+const HOST_RECONNECT_MAX_DELAY_MS = 5_000;
+const HOST_RECONNECT_STABLE_MS = 60_000;
 
 type RelayMessageName =
   | "InitiateHandshake"
@@ -132,14 +144,17 @@ export function createAgentEnrollmentChannelHost(input: {
       }
       assertHostRequest(request, input.environment, publisher);
       used = true;
+      const openSocket = () =>
+        socketFactory(input.webSocketFactory)(relayUrl(input.relayBaseUrl, publisher));
       let socket: EnrollmentChannelWebSocket;
       try {
-        socket = socketFactory(input.webSocketFactory)(relayUrl(input.relayBaseUrl, publisher));
+        socket = openSocket();
       } catch (error) {
         return Promise.reject(asChannelError(error));
       }
       session = runHost(
         socket,
+        openSocket,
         identity,
         request,
         authenticate as (completion: AgentEnrollmentChannelCompletion) => Promise<void>,
@@ -224,7 +239,8 @@ type HostSession = {
 };
 
 function runHost(
-  socket: EnrollmentChannelWebSocket,
+  initialSocket: EnrollmentChannelWebSocket,
+  openSocket: () => EnrollmentChannelWebSocket,
   identity: ReturnType<typeof createSoftwareAgentIdentity>,
   request: AgentEnrollmentChannelRequest,
   authenticate: (completion: AgentEnrollmentChannelCompletion) => Promise<void>,
@@ -247,15 +263,24 @@ function runHost(
     let completionTimer: ReturnType<typeof setTimeout> | undefined;
     let stopKeepAlive: () => void = () => undefined;
     let messageQueue = Promise.resolve();
+    let socket = initialSocket;
+    // Set once the session resolves or fails; a handler resuming after an await can still
+    // move `state`, so reconnects and timers check this instead.
+    let settled = false;
+    let attempts = 0;
+    let loseSocket: (message: string) => void = () => undefined;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
     const fail = failChannel(
-      socket,
+      () => socket.close(),
       reject,
-      () => state === "finished",
+      () => settled,
       () => {
+        settled = true;
         state = "finished";
         clearTimeout(phaseTimer);
         clearTimeout(completionTimer);
+        clearTimeout(reconnectTimer);
         stopKeepAlive();
       },
     );
@@ -267,15 +292,17 @@ function runHost(
     };
     const armHandshakeTimer = () => {
       clearTimeout(phaseTimer);
+      // A candidate that stops answering is dropped like a relay drop, so another can connect.
+      // The lost path runs directly because some sockets never report their own close.
       phaseTimer = deadlineTimer(timeouts.handshakeTimeoutMs, request.expiresAt, () =>
-        fail(channelError("Enrollment channel handshake timed out.")),
+        loseSocket("Enrollment channel handshake timed out."),
       );
     };
     completionTimer = deadlineTimer(timeouts.completionTimeoutMs, request.expiresAt, () =>
       fail(channelError("Enrollment completion timed out.")),
     );
     const resetCandidate = () => {
-      if (state === "finished") return;
+      if (settled) return;
       clearTimeout(phaseTimer);
       state = "connected";
       peer = "";
@@ -303,25 +330,94 @@ function runHost(
     // Stops timers and keepalive itself rather than relying on the socket's close event.
     close = () => fail(channelError("This enrollment host session has been closed."));
     armCandidateTimer();
-    socket.addEventListener("open", () => {
-      if (state !== "finished") stopKeepAlive = keepRelayAlive(socket);
-    });
-    socket.addEventListener("error", () =>
-      fail(channelError("Enrollment relay connection failed.")),
-    );
-    socket.addEventListener("close", () =>
-      fail(channelError("Enrollment relay closed before completion was acknowledged.")),
-    );
-    socket.addEventListener("message", (event) => {
-      if (isRelayKeepAliveReply(event.data)) return;
+    const openReconnect = () => {
+      if (settled) return;
+      // Timers stop while a laptop sleeps, so the wall clock decides whether the request expired.
+      if (Date.parse(request.expiresAt) <= Date.now()) {
+        fail(channelError("Enrollment completion timed out."));
+        return;
+      }
+      let source: EnrollmentChannelWebSocket | undefined;
+      try {
+        source = openSocket();
+        attach(source, true);
+      } catch {
+        // A factory or socket that throws is retried like a failed open; the queue must not reject.
+        try {
+          source?.close();
+        } catch {
+          // The socket was never attached, so nothing reports its failure.
+        }
+        reconnect();
+      }
+    };
+    const reconnect = () => {
+      if (settled) return;
+      // A drop before any candidate keeps the running wait for the first one.
+      if (state !== "connected") resetCandidate();
+      const delay = HOST_RECONNECT_DELAYS_MS[attempts] ?? HOST_RECONNECT_MAX_DELAY_MS;
+      attempts += 1;
+      // The relay rejects a candidate that arrives while the host is away, so the first
+      // reopen does not wait for a timer.
+      if (delay === 0) openReconnect();
+      else reconnectTimer = setTimeout(openReconnect, delay);
+    };
+    const attach = (source: EnrollmentChannelWebSocket, reopened: boolean) => {
+      let opened = false;
+      let openedAt = 0;
+      let lost = false;
+      const onLost = (message: string) => {
+        if (lost || source !== socket || settled) return;
+        lost = true;
+        stopKeepAlive();
+        // A socket that only reported an error may still be open, and the relay keeps its
+        // candidate until it closes.
+        try {
+          source.close();
+        } catch {
+          // A socket that cannot close is already gone.
+        }
+        if ((!opened && !reopened) || state === "authenticating" || state === "persisting") {
+          fail(channelError(message));
+          return;
+        }
+        if (opened && performance.now() - openedAt >= HOST_RECONNECT_STABLE_MS) attempts = 0;
+        // Queued so a handler already running for this socket finishes before the reset.
+        messageQueue = messageQueue.then(reconnect);
+      };
+      source.addEventListener("open", () => {
+        opened = true;
+        openedAt = performance.now();
+        if (source === socket && !settled && !lost) {
+          stopKeepAlive = keepRelayAlive(source, () =>
+            onLost("Enrollment relay closed before completion was acknowledged."),
+          );
+        }
+      });
+      source.addEventListener("error", () => onLost("Enrollment relay connection failed."));
+      source.addEventListener("close", () =>
+        onLost("Enrollment relay closed before completion was acknowledged."),
+      );
+      source.addEventListener("message", (event) => {
+        if (source === socket && !isRelayKeepAliveReply(event.data)) {
+          handleMessage(event.data, () => lost);
+        }
+      });
+      socket = source;
+      loseSocket = onLost;
+    };
+    const handleMessage = (data: unknown, lost: () => boolean) => {
       messageQueue = messageQueue
         .then(async () => {
-          const envelope = parseEnvelope(event.data);
+          // A frame queued before the relay dropped its socket would answer a candidate that left.
+          if (lost() || settled) return;
+          const envelope = parseEnvelope(data);
           if (envelope.message === "Failure")
             throw channelError("The enrollment relay rejected the session.");
 
-          // A new candidate may replace one that has not delivered yet, so a frontend
-          // that lost its relay socket while waiting for device approval can reconnect.
+          // The relay admits one candidate per host socket and closes the host when it leaves,
+          // which attach() handles by reopening. A relay that admits another candidate before
+          // delivery still gets a fresh handshake here.
           if (
             envelope.message === "InitiateHandshake" &&
             (state === "connected" || state === "challenged" || state === "authenticated")
@@ -360,6 +456,7 @@ function runHost(
               request,
               {},
             );
+            if (settled) return;
             clearTimeout(phaseTimer);
             state = "authenticated";
             return;
@@ -382,6 +479,7 @@ function runHost(
               await rejectCandidate(error);
               return;
             }
+            if (settled) return;
             state = "persisting";
             await withinDeadline(
               () => persist(completion),
@@ -400,6 +498,7 @@ function runHost(
                 digest: completionDigest(serialized),
               },
             );
+            settled = true;
             state = "finished";
             clearTimeout(completionTimer);
             clearTimeout(phaseTimer);
@@ -418,7 +517,8 @@ function runHost(
           }
           await rejectCandidate(error);
         });
-    });
+    };
+    attach(initialSocket, false);
   });
   return { completion, close: () => close() };
 }
@@ -459,7 +559,7 @@ function openCandidateSession(
   ready.catch(() => undefined);
 
   const fail = failChannel(
-    socket,
+    () => socket.close(),
     (error) => {
       failure = asChannelError(error);
       rejectReady(failure);
@@ -504,6 +604,10 @@ function openCandidateSession(
     messageQueue = messageQueue
       .then(async () => {
         const envelope = parseEnvelope(event.data);
+        // The relay's own Failure is unencrypted and does not carry the host key as publisher.
+        if (envelope.message === "Failure" && !("encrypted" in envelope.payload)) {
+          throw channelError("The enrollment relay rejected the session.");
+        }
         if (envelope.publisher.toLowerCase() !== request.channel.hostPublicKey.toLowerCase()) {
           throw channelError("Enrollment channel host does not match the signed request.");
         }
@@ -703,15 +807,26 @@ function send(socket: EnrollmentChannelWebSocket, envelope: RelayEnvelope): void
 }
 
 /** Pings the relay until the returned stop function runs. */
-function keepRelayAlive(socket: EnrollmentChannelWebSocket): () => void {
+function keepRelayAlive(socket: EnrollmentChannelWebSocket, onSilent?: () => void): () => void {
+  let deadline: ReturnType<typeof setTimeout> | undefined;
   const timer = setInterval(() => {
     try {
       socket.send(RELAY_KEEPALIVE_PING);
     } catch {
       // A socket that cannot send is closing; its close and error listeners report the failure.
     }
+    if (onSilent) {
+      clearTimeout(deadline);
+      deadline = setTimeout(onSilent, RELAY_PONG_TIMEOUT_MS);
+    }
   }, RELAY_KEEPALIVE_INTERVAL_MS);
-  return () => clearInterval(timer);
+  // Any frame proves the socket is alive, not only the pong. The socket type has no
+  // removeEventListener; once stopped, this listener only clears a cleared timer.
+  if (onSilent) socket.addEventListener("message", () => clearTimeout(deadline));
+  return () => {
+    clearInterval(timer);
+    clearTimeout(deadline);
+  };
 }
 
 function isRelayKeepAliveReply(data: unknown): boolean {
@@ -851,7 +966,7 @@ function base64ToBytes(value: string): Uint8Array {
 }
 
 function failChannel(
-  socket: EnrollmentChannelWebSocket,
+  closeSocket: () => void,
   reject: (reason: unknown) => void,
   finished: () => boolean,
   beforeReject: () => void,
@@ -861,7 +976,7 @@ function failChannel(
     if (failed || finished()) return;
     failed = true;
     beforeReject();
-    socket.close();
+    closeSocket();
     reject(asChannelError(reason));
   };
 }
