@@ -50,8 +50,9 @@ Changesets tags this single-package repository as `v<version>`.
 - If publishing partially succeeds, re-run the failed `Release` run (do not
   dispatch a new one). The publish plan leaves out a version already present in
   JFrog, and the version is still tagged and released if it was not. The tag is
-  created on the commit the run was triggered on, so a new dispatch or a later
-  push to `main` would tag a newer commit than the one the version was built
-  from.
+  created on the commit the run was triggered on, so a version that is
+  published but not tagged is only tagged from the commit that set it. Until
+  then, the publish job of a later push to `main` or of a new dispatch fails
+  instead of tagging a newer commit.
 - If the publish registry variable is absent, the workflow stops before
   publishing so it cannot accidentally target the read registry.
