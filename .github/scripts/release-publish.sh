@@ -22,7 +22,14 @@ pnpm exec changeset git-tag
 # origin yet, so it is not reported twice.
 name=$(node -p 'require("./package.json").name')
 tag="v$(node -p 'require("./package.json").version')"
-if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+# `ls-remote --exit-code` exits 2 when the tag is absent; any other failure is an error.
+remote_tag=0
+git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null || remote_tag=$?
+if [ "$remote_tag" -ne 0 ] && [ "$remote_tag" -ne 2 ]; then
+  echo "::error::Could not check whether $tag exists on origin (git ls-remote exited $remote_tag)."
+  exit 1
+fi
+if [ "$remote_tag" -eq 0 ]; then
   if ! release=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" 2>&1); then
     if [[ "$release" != *"HTTP 404"* ]]; then
       echo "::error::Could not look up the GitHub release for $tag: $release"

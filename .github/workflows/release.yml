@@ -58,8 +58,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # No dependency cache in a job that holds CI_BOT_TOKEN.
       - name: Set up toolchain
         uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          cache: false
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

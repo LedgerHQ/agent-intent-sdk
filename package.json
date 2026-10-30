@@ -42,7 +42,6 @@
     "format:check": "oxfmt --check .",
     "lint": "oxlint .",
     "pack:check": "node scripts/pack-check.mjs",
-    "release": "changeset publish",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
