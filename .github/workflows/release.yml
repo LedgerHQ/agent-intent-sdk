@@ -155,7 +155,7 @@ jobs:
 
       - name: Attest tarball
         if: ${{ steps.plan.outputs.count != '0' }}
-        uses: LedgerHQ/actions-security/actions/attest-for-npmsjs-com@c92cff0840fbb28663c0061698e5e8ac5228dcce # attest-for-npmsjs-com-0.1.2
+        uses: LedgerHQ/actions-security/actions/attest-for-npmsjs-com@c92cff0840fbb28663c0061698e5e8ac5228dcce # actions/attest-for-npmsjs-com-0.1.2
         with:
           subject-path: ${{ steps.pack.outputs.tarball }}
 
