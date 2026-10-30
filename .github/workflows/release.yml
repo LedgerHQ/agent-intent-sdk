@@ -13,23 +13,45 @@ permissions:
   contents: read
 
 jobs:
-  release:
-    name: Version or publish
-    runs-on: ${{ vars.RELEASE_RUNNER || 'public-ledgerhq-shared-medium' }}
-    permissions:
-      contents: write
-      id-token: write
-      pull-requests: write
+  # A changeset that releases something -> update the version pull request. Otherwise ->
+  # the publish job, which decides against JFrog whether the current version is missing.
+  # The mode is read from .changeset rather than from changesets/action/select-mode, which
+  # would resolve the publish plan against npmjs.com instead of the JFrog publish registry.
+  select-mode:
+    name: Select release mode
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.select-mode.outputs.mode }}
     steps:
-      - name: Generate app token
-        id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          client-id: ${{ secrets.GH_BOT_APP_ID }}
-          private-key: ${{ secrets.GH_BOT_PRIVATE_KEY }}
-          permission-contents: write
-          permission-pull-requests: write
+          persist-credentials: false
 
+      # A changeset releases something when its frontmatter lists a package; an empty one
+      # (`changeset --empty`) is just `---` twice.
+      - name: Select Changesets mode
+        id: select-mode
+        run: |
+          mode=publish
+          shopt -s nullglob
+          for file in .changeset/*.md; do
+            [ "$(basename "$file")" = "README.md" ] && continue
+            if awk '/^---[[:space:]]*$/ { n++; next } n == 1 && NF { found = 1 } END { exit !found }' "$file"; then
+              echo "$file releases packages"
+              mode=version
+            fi
+          done
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
+  version:
+    name: Version pull request
+    needs: select-mode
+    if: ${{ needs.select-mode.outputs.mode == 'version' }}
+    runs-on: ${{ vars.RELEASE_RUNNER || 'public-ledgerhq-shared-medium' }}
+    steps:
+      # Full history: @changesets/changelog-github resolves the commit that added each
+      # changeset.
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -42,6 +64,43 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # CI_BOT_TOKEN rather than GITHUB_TOKEN: pull requests opened with GITHUB_TOKEN do
+      # not trigger CI.
+      - name: Create or update the version pull request
+        uses: changesets/action/version@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
+        with:
+          github-token: ${{ secrets.CI_BOT_TOKEN }}
+          commit-message: "chore(release): version package"
+          pr-title: "chore(release): version package"
+
+  # Pack -> attest -> publish in one job, so the tarball published is the one attested.
+  # Attesting needs a GitHub-hosted runner and JFrog only accepts allowlisted IPs: the
+  # Ledger larger GitHub-hosted runner is both.
+  publish:
+    name: Publish to JFrog
+    needs: select-mode
+    if: ${{ needs.select-mode.outputs.mode == 'publish' }}
+    runs-on: ${{ vars.RELEASE_RUNNER || 'public-ledgerhq-shared-medium' }}
+    permissions:
+      contents: read
+      id-token: write # JFrog OIDC login and attestation signing
+      attestations: write # upload the SLSA provenance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No dependency cache in the job that holds publish credentials.
+      - name: Set up toolchain
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          cache: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Builds dist/, which the tarball ships.
       - name: Verify
         run: pnpm verify
 
@@ -59,10 +118,55 @@ jobs:
         with:
           registry: ${{ vars.ARTIFACTORY_PUBLISH_URL }}
 
-      - name: Create version pull request or publish
-        uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
+      # Resolved against the JFrog publish registry configured above, so a rerun only packs
+      # and publishes a version that is still missing there.
+      - name: Compute the publish plan against JFrog
+        id: plan
+        env:
+          PLAN_FILE: ${{ runner.temp }}/publish-plan.json
+        run: |
+          pnpm exec changeset publish-plan --output "$PLAN_FILE"
+          count=$(jq '[.plan[][] | select(.kind == "publish")] | length' "$PLAN_FILE")
+          echo "$count package(s) to publish to JFrog"
+          {
+            echo "file=$PLAN_FILE"
+            echo "count=$count"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Pack
+        if: ${{ steps.plan.outputs.count != '0' }}
+        id: pack
+        env:
+          OUT_DIR: ${{ runner.temp }}/changesets-pack
+          PLAN_FILE: ${{ steps.plan.outputs.file }}
+        run: |
+          pnpm exec changeset pack --from-publish-plan "$PLAN_FILE" --out-dir "$OUT_DIR"
+
+          shopt -s nullglob
+          tarballs=("$OUT_DIR"/packages/*.tgz)
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "::error::Expected one tarball in $OUT_DIR/packages, found ${#tarballs[@]}."
+            exit 1
+          fi
+          {
+            echo "out-dir=$OUT_DIR"
+            echo "tarball=${tarballs[0]}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Attest tarball
+        if: ${{ steps.plan.outputs.count != '0' }}
+        uses: LedgerHQ/actions-security/actions/attest-for-npmsjs-com@c92cff0840fbb28663c0061698e5e8ac5228dcce # attest-for-npmsjs-com-0.1.2
         with:
-          github-token: ${{ steps.app-token.outputs.token }}
-          commit-message: "chore(release): version package"
-          pr-title: "chore(release): version package"
-          publish-script: pnpm release
+          subject-path: ${{ steps.pack.outputs.tarball }}
+
+      # Publishes the attested tarball (if any), then tags the current version if it has no
+      # tag yet; the action pushes the tag and creates the GitHub release. Runs even when
+      # nothing was packed, so a rerun recovers a release that reached JFrog but failed
+      # before tagging.
+      - name: Publish, tag and release
+        uses: changesets/action/publish@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
+        env:
+          PACK_DIR: ${{ steps.pack.outputs.out-dir }}
+        with:
+          github-token: ${{ secrets.CI_BOT_TOKEN }}
+          script: bash .github/scripts/release-publish.sh

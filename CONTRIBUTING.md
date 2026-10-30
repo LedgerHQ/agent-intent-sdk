@@ -69,11 +69,11 @@ locally.
 1. Merge a pull request with a changeset into `main`.
 2. The release workflow opens or updates `chore(release): version package`.
 3. Review and merge that version pull request into `main`.
-4. The same workflow builds, verifies, and publishes the version to Ledger
-   JFrog, then creates the package tag and GitHub release.
+4. The same workflow builds, verifies, attests, and publishes the version to
+   Ledger JFrog, then creates the package tag and GitHub release.
 
 `main` is the only long-lived branch. Version tags are the immutable release
 history; there is no release-promotion branch.
 
-Repository maintainers must configure the GitHub App credentials and JFrog
-variables listed in [docs/RELEASE.md](./docs/RELEASE.md).
+Repository maintainers must configure the secrets and JFrog variables listed in
+[docs/RELEASE.md](./docs/RELEASE.md).
