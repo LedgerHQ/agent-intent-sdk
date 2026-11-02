@@ -48,6 +48,7 @@ describe("parseErc20Approval", () => {
       { to: USDC, calldata: `0x095ea7b3${"1".repeat(24)}${SPENDER.slice(2)}${word("1")}` },
     ],
     ["trailing bytes", { to: USDC, calldata: `${APPROVE_CALLDATA}00` }],
+    ["a leading space", { to: USDC, calldata: ` ${APPROVE_CALLDATA}` }],
     ["no calldata", { to: USDC }],
     ["no transaction", undefined],
     ["a string", APPROVE_CALLDATA],
@@ -128,6 +129,18 @@ describe("canApproveSwapQuote", () => {
   it.each<[string, SwapApprovalQuote, Partial<SwapApprovalContext>, boolean]>([
     ["accepts an approval of the sold token", approvable, {}, true],
     ["accepts a sold token in mixed case", approvable, { soldTokenContract: mixedCaseUsdc }, true],
+    [
+      "accepts an approved token in mixed case",
+      { ...approvable, allowanceToken: mixedCaseUsdc },
+      {},
+      true,
+    ],
+    [
+      "accepts another token with an allowance left",
+      { ...approvable, allowanceAmount: 1n },
+      {},
+      true,
+    ],
     ["accepts USDT with a zero allowance", usdtWith(0n), sellsUsdt, true],
     ["refuses another network", approvable, { network: "ethereum_sepolia" }, false],
     [
@@ -144,8 +157,26 @@ describe("canApproveSwapQuote", () => {
       {},
       false,
     ],
+    [
+      "refuses a spender that isn't an address",
+      { ...approvable, allowanceSpender: "router" },
+      {},
+      false,
+    ],
+    [
+      "refuses an approved token that isn't an address",
+      { ...approvable, allowanceToken: "usdc" },
+      { soldTokenContract: "usdc" },
+      false,
+    ],
     ["refuses an approval of another token", approvable, sellsUsdt, false],
     ["refuses a native sale", approvable, { soldTokenContract: undefined }, false],
+    [
+      "refuses a native sale whose approval names no token",
+      { approvalRequired: true, allowanceSpender: SPENDER },
+      { soldTokenContract: undefined },
+      false,
+    ],
     ["refuses USDT with an allowance left", usdtWith(1n), sellsUsdt, false],
     ["refuses USDT with an unknown allowance", usdtWith(), sellsUsdt, false],
   ])("%s", (_, quote, overrides, expected) => {

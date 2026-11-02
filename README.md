@@ -101,8 +101,9 @@ const deeplink = await client.createSwapIntent({
 
 ### Swap token approvals
 
-wallet-cli and the Agent Intent app use the same rules to decide whether the app can send
-the ERC-20 approval a Swap API quote needs:
+`canApproveSwapQuote` decides whether the Agent Intent app can send the ERC-20
+approval a Swap API quote needs, so that wallet-cli and the app can apply the same
+rules:
 
 ```ts
 const approval = parseErc20Approval(tokenAllowanceData.approvalTransaction);
@@ -121,9 +122,26 @@ const approvable = canApproveSwapQuote(
 );
 ```
 
+The caller computes three inputs:
+
+- `permitRequired`: the quote asks for a Permit2 signature.
+- `swapsWithCalldata`: the quote's provider is one the app swaps with calldata.
+- `soldTokenContract`: the sold token's contract address from the Crypto Assets
+  List; `undefined` for a native sale, whose quote is refused.
+
+The app can send the approval only when all of these hold:
+
+- the network is `ethereum`;
+- the quote needs an approval and no Permit2 signature;
+- its provider swaps with calldata;
+- the approval is an `approve` of the sold token, and its spender and token are
+  addresses;
+- for USDT, the allowance left is zero (`needsAllowanceReset` says when to reset it
+  first).
+
+`parseErc20Approval` reads only exact `approve(address,uint256)` calldata.
 `parseBaseUnits` takes decimal digits or a safe integer only, so `"0x0"` is not a
-zero allowance. USDT also needs a zero allowance; `needsAllowanceReset` says when it
-must be reset first.
+zero allowance.
 
 ## List the agent's intents
 

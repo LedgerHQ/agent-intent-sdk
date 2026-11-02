@@ -26,7 +26,6 @@ export type SwapApprovalContext = {
   soldTokenContract: string | undefined;
 };
 
-/** A quote's `approvalTransaction` (`{ to, calldata }`) if it calls `approve`, else `undefined`. */
 export function parseErc20Approval(transaction: unknown): Erc20Approval | undefined {
   if (typeof transaction !== "object" || transaction === null) return undefined;
   const { to, calldata } = transaction as { to?: unknown; calldata?: unknown };
@@ -41,7 +40,6 @@ export function parseErc20Approval(transaction: unknown): Erc20Approval | undefi
   };
 }
 
-/** A non-negative integer of base units (a decimal string or a safe integer), else `undefined`. */
 export function parseBaseUnits(amount: unknown): bigint | undefined {
   if (typeof amount === "string") return /^\d+$/.test(amount) ? BigInt(amount) : undefined;
   if (typeof amount === "number") {
@@ -50,7 +48,6 @@ export function parseBaseUnits(amount: unknown): bigint | undefined {
   return undefined;
 }
 
-/** From a quote's `tokenAllowanceData.isApproved` and `tags.isTokenApprovalRequired`. */
 export function isSwapApprovalRequired(flags: {
   isApproved?: unknown;
   isTokenApprovalRequired?: unknown;
@@ -68,14 +65,14 @@ export function needsAllowanceReset(
   return revertsUnlessAllowanceIsZero(quote) && (quote.allowanceAmount ?? 0n) > 0n;
 }
 
-/** Whether the Agent Intent app can send the approval this quote needs before its swap. */
 export function canApproveSwapQuote<Quote extends SwapApprovalQuote>(
   quote: Quote,
   { network, swapsWithCalldata, soldTokenContract }: SwapApprovalContext,
 ): quote is ApprovableSwapQuote<Quote> {
   const approvesTheSoldToken =
     soldTokenContract !== undefined &&
-    quote.allowanceToken?.toLowerCase() === soldTokenContract.toLowerCase();
+    isEvmAddress(quote.allowanceToken) &&
+    quote.allowanceToken.toLowerCase() === soldTokenContract.toLowerCase();
   const allowanceAcceptsApprove =
     !revertsUnlessAllowanceIsZero(quote) || quote.allowanceAmount === 0n;
   return (
@@ -83,10 +80,14 @@ export function canApproveSwapQuote<Quote extends SwapApprovalQuote>(
     quote.approvalRequired &&
     !quote.permitRequired &&
     swapsWithCalldata &&
-    Boolean(quote.allowanceSpender) &&
+    isEvmAddress(quote.allowanceSpender) &&
     approvesTheSoldToken &&
     allowanceAcceptsApprove
   );
+}
+
+function isEvmAddress(value: string | undefined): value is string {
+  return value !== undefined && EVM_ADDRESS.test(value.toLowerCase());
 }
 
 function revertsUnlessAllowanceIsZero(quote: Pick<SwapApprovalQuote, "allowanceToken">): boolean {
