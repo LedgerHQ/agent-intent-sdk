@@ -4,8 +4,8 @@
 
 This repository publishes the headless `@ledgerhq/agent-intent-sdk` package.
 It owns software agent identities, enrollment links and completion payloads,
-LKRP/Keycloak authentication, canonical intent encoding and signing, and BFF
-intent submission.
+LKRP/Keycloak authentication, canonical intent encoding and signing, BFF intent
+submission, and the rules for Swap quote token approvals.
 
 Do not add React, Vite, browser storage, Ledger device SDKs, application state,
 frontend workflows, mocks, or the Agent Intent CLI to this package.
