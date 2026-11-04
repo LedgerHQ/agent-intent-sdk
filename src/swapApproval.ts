@@ -1,5 +1,6 @@
 const ERC20_APPROVE_CALLDATA = /^0x095ea7b30{24}([0-9a-f]{40})[0-9a-f]{64}$/;
 const EVM_ADDRESS = /^0x[0-9a-f]{40}$/;
+const ZERO_ADDRESS = `0x${"0".repeat(40)}`;
 const TOKENS_THAT_REVERT_CHANGING_A_NONZERO_ALLOWANCE: ReadonlySet<string> = new Set([
   "0xdac17f958d2ee523a2206206994597c13d831ec7",
 ]);
@@ -81,6 +82,7 @@ export function canApproveSwapQuote<Quote extends SwapApprovalQuote>(
     !quote.permitRequired &&
     swapsWithCalldata &&
     isEvmAddress(quote.allowanceSpender) &&
+    quote.allowanceSpender.toLowerCase() !== ZERO_ADDRESS &&
     approvesTheSoldToken &&
     allowanceAcceptsApprove
   );

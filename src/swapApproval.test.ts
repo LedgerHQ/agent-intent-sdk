@@ -164,6 +164,12 @@ describe("canApproveSwapQuote", () => {
       false,
     ],
     [
+      "refuses the zero address as the spender",
+      { ...approvable, allowanceSpender: `0x${"0".repeat(40)}` },
+      {},
+      false,
+    ],
+    [
       "refuses an approved token that isn't an address",
       { ...approvable, allowanceToken: "usdc" },
       { soldTokenContract: "usdc" },
