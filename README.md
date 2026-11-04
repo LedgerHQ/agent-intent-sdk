@@ -135,7 +135,7 @@ The app can send the approval only when all of these hold:
 - the quote needs an approval and no Permit2 signature;
 - its provider swaps with calldata;
 - the approval is an `approve` of the sold token, and its spender and token are
-  addresses;
+  addresses, the spender not the zero address;
 - for USDT, the allowance left is zero (`needsAllowanceReset` says when to reset it
   first).
 
