@@ -1,5 +1,15 @@
 # @ledgerhq/agent-intent-sdk
 
+## 0.2.0
+
+### Minor Changes
+
+- [#41](https://github.com/LedgerHQ/agent-intent-sdk/pull/41) [`4f54f41`](https://github.com/LedgerHQ/agent-intent-sdk/commit/4f54f41894ebbdf28c8d39eff4e656d89061c0e2) Thanks [@michaldebek-ext-max](https://github.com/michaldebek-ext-max)! - Export `canApproveSwapQuote`, `needsAllowanceReset`, `isSwapApprovalRequired`, `parseErc20Approval` and `parseBaseUnits`: the rules that decide whether the Agent Intent app can send a swap quote's token approval, for wallet-cli and the app to share.
+
+### Patch Changes
+
+- [#50](https://github.com/LedgerHQ/agent-intent-sdk/pull/50) [`0858e92`](https://github.com/LedgerHQ/agent-intent-sdk/commit/0858e92ccb17f94fd7ef1106fc5e0b2b1a9b637b) Thanks [@michaldebek-ext-max](https://github.com/michaldebek-ext-max)! - `canApproveSwapQuote` refuses a quote whose approval spender is the zero address.
+
 ## 0.1.0
 
 ### Minor Changes
