@@ -158,16 +158,24 @@ export class AgentEnrollmentRejectedError extends AgentIntentSdkError {
   }
 }
 
+// ES2026, so not in the ES2023 lib; older browsers lack it.
+const errorIsError = (Error as { isError?: (value: unknown) => boolean }).isError;
+
 /**
  * Checked by shape rather than `instanceof`, so an error from another copy of the SDK or another
- * realm of the same process still matches. It must still be a real `Error`, which
- * `Object.prototype.toString` tells across realms. A structured clone, such as `postMessage` to a
- * worker, keeps neither the name nor `kind`, so a cloned error does not match.
+ * realm of the same process still matches. It must still be a real `Error`, which `Error.isError`
+ * tells across realms. Where it is missing, `Object.prototype.toString` stands in, which an object
+ * can fool through `Symbol.toStringTag`. A structured clone, such as `postMessage` to a worker,
+ * keeps neither the name nor `kind`, so a cloned error does not match.
  */
 export function isAgentEnrollmentRejectedError(
   error: unknown,
 ): error is AgentEnrollmentRejectedError {
-  if (Object.prototype.toString.call(error) !== "[object Error]") return false;
+  const isError =
+    errorIsError === undefined
+      ? Object.prototype.toString.call(error) === "[object Error]"
+      : errorIsError(error);
+  if (!isError) return false;
   const { name, kind, message } = error as { name?: unknown; kind?: unknown; message?: unknown };
   return (
     name === "AgentEnrollmentRejectedError" &&
@@ -415,13 +423,6 @@ function runHost(
       if (cipher) await answerCandidate(cipher, "Failure", { reason });
       resetCandidate();
     };
-    const rejectCandidate = async (reason: unknown) => {
-      await dropCandidate("reset");
-      if (!(reason instanceof AgentIntentSdkError)) {
-        // Normalize callback failures without exposing their potentially sensitive details.
-        asChannelError(reason);
-      }
-    };
     // Stops timers and keepalive itself rather than relying on the socket's close event.
     close = () => fail(channelError("This enrollment host session has been closed."));
     armCandidateTimer();
@@ -612,8 +613,9 @@ function runHost(
                 request.expiresAt,
                 "Enrollment completion authentication timed out.",
               );
-            } catch (error) {
-              await rejectCandidate(error);
+            } catch {
+              // The callback's error may hold sensitive details, so the candidate only sees a reset.
+              await dropCandidate("reset");
               return;
             }
             if (settled) return;
@@ -652,7 +654,7 @@ function runHost(
             fail(error);
             return;
           }
-          await rejectCandidate(error);
+          await dropCandidate("reset");
         });
     };
     attach(initialSocket, false);

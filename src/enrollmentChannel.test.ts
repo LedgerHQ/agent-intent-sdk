@@ -2667,6 +2667,12 @@ describe("encrypted enrollment channel", () => {
         Object.assign(new Error("rejected"), { name: "AgentEnrollmentRejectedError", kind: "x" }),
         // Not an Error, even though it has the fields.
         { name: "AgentEnrollmentRejectedError", kind: "enrollment", message: "rejected" },
+        {
+          [Symbol.toStringTag]: "Error",
+          name: "AgentEnrollmentRejectedError",
+          kind: "enrollment",
+          message: "rejected",
+        },
         "AgentEnrollmentRejectedError",
         null,
         undefined,
