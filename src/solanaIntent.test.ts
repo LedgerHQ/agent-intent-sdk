@@ -1,5 +1,4 @@
 import { secp256k1 } from "@noble/curves/secp256k1.js";
-import bs58 from "bs58";
 import { describe, expect, it, vi } from "vitest";
 import { bytesToHex, hexToBytes } from "./bytes.ts";
 import { createAgentIntentClient, staticAccessTokenProvider } from "./client.ts";
@@ -100,7 +99,8 @@ describe("Solana send signing contract", () => {
   it.each([
     [
       "a 31-byte address",
-      { recipient: bs58.encode(new Uint8Array(31).fill(0x22)) },
+      // 0x22 × 31.
+      { recipient: "XBtQAUiiGRrZR8Y134TFuAW4wdtrt49PB7sHyXtyVK" },
       "recipient must be a 32-byte base58 address.",
     ],
     ["a non-base58 address", { sender: `${SENDER.slice(0, -1)}0` }, "sender must be base58."],
@@ -157,7 +157,10 @@ describe("Solana send signing contract", () => {
     ],
     [
       "a 31-byte mint",
-      { asset: { type: "spl-token", assetReference: bs58.encode(new Uint8Array(31).fill(0xc6)) } },
+      // 0xc6 × 31.
+      {
+        asset: { type: "spl-token", assetReference: "42oLZYK8VnVjxiaeErXLrEn6WnEZUmr23u6seSaDfxh" },
+      },
       "assetReference must be a 32-byte base58 address.",
     ],
   ])("refuses %s", (_name, fields, message) => {
@@ -179,6 +182,27 @@ describe("Solana send signing contract", () => {
     expect(bytesToHex(encodeSendIntentTlv(decomposed, NONCE))).toBe(
       bytesToHex(encodeSendIntentTlv(composed, NONCE)),
     );
+  });
+
+  // Each address decodes to the 32 bytes the service re-encodes; computed outside bs58.
+  it.each([
+    ["USDC mint", USDC_MINT, "c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d61"],
+    [
+      "wrapped SOL mint",
+      "So11111111111111111111111111111111111111112",
+      "069b8857feab8184fb687f634618c035dac439dc1aeb3b5598a0f00000000001",
+    ],
+    ["key 1", "11111111111111111111111111111112", `${"00".repeat(31)}01`],
+    [
+      "four leading zero bytes",
+      "11113diW7pnisfdBvHTXP7wvW5k5Ky1e5DVuF7aXQpW",
+      `${"00".repeat(4)}${"ff".repeat(28)}`,
+    ],
+    ["the largest key, 44 digits", "JEKNVnkbo3jma5nREBBJCDoXFVeKkD56V3xKrvRmWxFG", "ff".repeat(32)],
+  ])("decodes the %s address", (_name, sender, keyHex) => {
+    const encoded = bytesToHex(encodeSendIntentTlv({ ...SOLANA_SEND, sender }, NONCE));
+
+    expect(encoded).toContain(`1120${keyHex}1220`);
   });
 
   it("decodes an address of leading 1s to the all-zero key", () => {
