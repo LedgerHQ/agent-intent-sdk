@@ -31,6 +31,32 @@ const CHANNEL_DOMAIN = new TextEncoder().encode("agent-intent:enrollment-channel
 const RELAY_KEEPALIVE_INTERVAL_MS = 60_000;
 const RELAY_KEEPALIVE_PING = "ping";
 const RELAY_KEEPALIVE_PONG = "pong";
+// A socket can stay half-open without reporting close; the host treats a ping that gets no
+// frame back within this window as a drop.
+const RELAY_PONG_TIMEOUT_MS = 10_000;
+
+// The relay closes the host socket once its candidate leaves. The host reopens on the same key
+// until the request expires or the completion timeout elapses: at once, then after 1, 2 and 4
+// seconds, then every 5 seconds. A socket that stayed open for a minute before it dropped
+// restarts that backoff; the minute is measured on the monotonic clock, so a wall-clock change
+// does not move it.
+const HOST_RECONNECT_DELAYS_MS = [0, 1_000, 2_000, 4_000] as const;
+const HOST_RECONNECT_MAX_DELAY_MS = 5_000;
+const HOST_RECONNECT_STABLE_MS = 60_000;
+
+// The relay has no rejection message and refuses frames outside its own protocol, so a rejection
+// travels like a completion: the candidate sends it as TrustchainShareCredential and the host
+// acknowledges it with TrustchainAddedMember. Only a rejection and its acknowledgement carry a
+// `reason`; a completion carries `completion` and its acknowledgement `acknowledged`.
+const USER_REJECTION = { reason: "user-rejected" } as const;
+const REJECTION_ACKNOWLEDGEMENT = { reason: "rejection-acknowledged" } as const;
+// The host refuses a rejection or a completion with a Failure. The relay reads a Failure as
+// `{ type, message }`, takes `type` from its own list, and forwards the message of this type
+// untouched, so the encrypted reason travels there. The relay then closes both sides.
+const HOST_REFUSAL_TYPE = "UNEXPECTED_SHARE_CREDENTIAL";
+type HostRefusalReason = "completion-received" | "reset";
+const REJECTION_REFUSED_MESSAGE =
+  "The enrollment host already received a completion for this request; it can no longer be rejected.";
 
 type RelayMessageName =
   | "InitiateHandshake"
@@ -97,17 +123,67 @@ export type AgentEnrollmentChannelCandidate = {
   /**
    * Opens the relay session and completes the key-confirmation handshake, then
    * keeps the session open for a later `deliver()`. Resolves once the host is
-   * reachable. Repeated calls share the open session.
+   * reachable. Repeated calls share the open session, and a call made while
+   * `deliver()` or `reject()` runs reports on that call's session.
    */
   connect(): Promise<void>;
   /**
    * Sends the serialized completion and resolves once the host acknowledges it.
-   * Connects first when no session is open. After a rejection the candidate may
-   * retry on a fresh session while the signed request is unexpired.
+   * Connects first when no session is open. After the host turns a delivery down
+   * the candidate may retry on a fresh session while the signed request is unexpired.
    */
   deliver(completionPayload: string): Promise<void>;
+  /**
+   * Tells the host that the user rejected the signed request and resolves once
+   * the host acknowledges it; the candidate is then unusable. Connects first
+   * when no session is open. Never call it once the device has committed the
+   * enrollment to the Trustchain: a rejection cannot undo that commit. The caller
+   * must remember that commit across page reloads, because a new candidate cannot
+   * know it. It throws once `deliver()` has been called, and fails for good once
+   * the host answers that it already received a completion for this request.
+   * After any other failure the host may still have honored the rejection, and
+   * `reject()` may be retried on a fresh session.
+   */
+  reject(): Promise<void>;
   close(): void;
 };
+
+/** The user rejected the signed enrollment or recovery request in the frontend. */
+export class AgentEnrollmentRejectedError extends AgentIntentSdkError {
+  readonly kind: "enrollment" | "recovery";
+
+  constructor(kind: "enrollment" | "recovery") {
+    super(`The user rejected this agent ${kind} request.`);
+    this.name = "AgentEnrollmentRejectedError";
+    this.kind = kind;
+  }
+}
+
+// ES2026, so not in the ES2023 lib; older browsers lack it.
+const errorIsError = (Error as { isError?: (value: unknown) => boolean }).isError;
+
+/**
+ * Checked by shape rather than `instanceof`, so an error from another copy of the SDK or another
+ * realm of the same process still matches. It must still be a real `Error`, which `Error.isError`
+ * tells across realms. Where it is missing, `Object.prototype.toString` stands in, which an object
+ * can fool through `Symbol.toStringTag`. A structured clone, such as `postMessage` to a worker,
+ * keeps neither the name nor `kind`, so a cloned error does not match.
+ */
+export function isAgentEnrollmentRejectedError(
+  error: unknown,
+): error is AgentEnrollmentRejectedError {
+  const isError =
+    errorIsError === undefined
+      ? Object.prototype.toString.call(error) === "[object Error]"
+      : errorIsError(error);
+  if (!isError) return false;
+  const { name, kind, message } = error as { name?: unknown; kind?: unknown; message?: unknown };
+  return (
+    name === "AgentEnrollmentRejectedError" &&
+    (kind === "enrollment" || kind === "recovery") &&
+    typeof message === "string"
+  );
+}
 
 export function createAgentEnrollmentChannelHost(input: {
   environment: AgentEnrollmentChannelBinding["environment"];
@@ -132,14 +208,17 @@ export function createAgentEnrollmentChannelHost(input: {
       }
       assertHostRequest(request, input.environment, publisher);
       used = true;
+      const openSocket = () =>
+        socketFactory(input.webSocketFactory)(relayUrl(input.relayBaseUrl, publisher));
       let socket: EnrollmentChannelWebSocket;
       try {
-        socket = socketFactory(input.webSocketFactory)(relayUrl(input.relayBaseUrl, publisher));
+        socket = openSocket();
       } catch (error) {
         return Promise.reject(asChannelError(error));
       }
       session = runHost(
         socket,
+        openSocket,
         identity,
         request,
         authenticate as (completion: AgentEnrollmentChannelCompletion) => Promise<void>,
@@ -166,18 +245,22 @@ export function createAgentEnrollmentChannelCandidate(input: {
 
   const timeouts = resolveTimeouts(input.timeouts);
   let session: CandidateSession | undefined;
-  let delivering = false;
+  let pending: "delivery" | "rejection" | undefined;
+  // Set once the device may have committed the enrollment, which a rejection cannot undo.
+  let tooLateToReject: string | undefined;
   let delivered = false;
+  let rejected = false;
   let closed = false;
 
   const assertUsable = () => {
     if (delivered) throw channelError("This enrollment completion has already been sent.");
+    if (rejected) throw channelError("This enrollment request has already been rejected.");
     if (closed) throw channelError("This enrollment completion channel has been closed.");
     assertCandidateRequest(input.request, new Date());
   };
-  const connectSession = (): Promise<CandidateSession> => {
-    if (session === undefined || session.failed) {
-      try {
+  const withSession = <T>(use: (active: CandidateSession) => Promise<T>): Promise<T> => {
+    try {
+      if (session === undefined || session.failed) {
         session = openCandidateSession(
           socketFactory(input.webSocketFactory)(
             relayUrl(input.relayBaseUrl, input.request.channel.hostPublicKey),
@@ -185,30 +268,58 @@ export function createAgentEnrollmentChannelCandidate(input: {
           input.request,
           timeouts,
         );
-      } catch (error) {
-        return Promise.reject(asChannelError(error));
       }
+      return use(session);
+    } catch (error) {
+      return Promise.reject(asChannelError(error));
     }
-    const active = session;
-    return active.ready.then(() => active);
   };
 
   return {
     connect: () => {
       assertUsable();
-      return connectSession().then(() => undefined);
+      // A running delivery or rejection owns the session, even one whose loss is still being
+      // reported, so connect() reports on it rather than opening another.
+      if (pending !== undefined && session !== undefined) return session.ready;
+      return withSession((active) => active.ready.then(() => undefined));
     },
     deliver: (completionPayload) => {
-      if (delivering) throw channelError("This enrollment completion is already being sent.");
+      if (pending === "delivery") {
+        throw channelError("This enrollment completion is already being sent.");
+      }
+      if (pending === "rejection") throw channelError("This enrollment request is being rejected.");
       assertUsable();
-      delivering = true;
-      return connectSession()
-        .then((active) => active.deliver(completionPayload))
+      pending = "delivery";
+      tooLateToReject ??=
+        "This enrollment request can no longer be rejected once its completion delivery has started.";
+      return withSession((active) => active.ready.then(() => active.deliver(completionPayload)))
         .then(() => {
           delivered = true;
         })
         .finally(() => {
-          delivering = false;
+          pending = undefined;
+        });
+    },
+    reject: () => {
+      // The host refuses it too once it received a completion; this check needs no round trip.
+      if (tooLateToReject !== undefined) throw channelError(tooLateToReject);
+      if (pending === "rejection") {
+        throw channelError("This enrollment request is already being rejected.");
+      }
+      assertUsable();
+      pending = "rejection";
+      return withSession((active) =>
+        active.reject().catch((error: unknown) => {
+          // Final: each retry would only make the relay drop the host again and delay its reopening.
+          if (active.rejectionRefused) tooLateToReject = REJECTION_REFUSED_MESSAGE;
+          throw error;
+        }),
+      )
+        .then(() => {
+          rejected = true;
+        })
+        .finally(() => {
+          pending = undefined;
         });
     },
     close: () => {
@@ -224,7 +335,8 @@ type HostSession = {
 };
 
 function runHost(
-  socket: EnrollmentChannelWebSocket,
+  initialSocket: EnrollmentChannelWebSocket,
+  openSocket: () => EnrollmentChannelWebSocket,
   identity: ReturnType<typeof createSoftwareAgentIdentity>,
   request: AgentEnrollmentChannelRequest,
   authenticate: (completion: AgentEnrollmentChannelCompletion) => Promise<void>,
@@ -247,15 +359,29 @@ function runHost(
     let completionTimer: ReturnType<typeof setTimeout> | undefined;
     let stopKeepAlive: () => void = () => undefined;
     let messageQueue = Promise.resolve();
+    let socket = initialSocket;
+    // Set once the session resolves or fails; a handler resuming after an await can still
+    // move `state`, so reconnects and timers check this instead.
+    let settled = false;
+    // Survives candidate resets. A parsed completion does not prove the device committed, since
+    // the link is enough to build one, but neither does a failed authenticate() disprove it.
+    // Refusing a rejection then costs a wait until expiry; honoring one after a real commit would
+    // leave a Trustchain member whose agent treats it as rejected.
+    let completionReceived = false;
+    let attempts = 0;
+    let loseSocket: (message: string) => void = () => undefined;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
     const fail = failChannel(
-      socket,
+      () => socket.close(),
       reject,
-      () => state === "finished",
+      () => settled,
       () => {
+        settled = true;
         state = "finished";
         clearTimeout(phaseTimer);
         clearTimeout(completionTimer);
+        clearTimeout(reconnectTimer);
         stopKeepAlive();
       },
     );
@@ -267,15 +393,17 @@ function runHost(
     };
     const armHandshakeTimer = () => {
       clearTimeout(phaseTimer);
+      // A candidate that stops answering is dropped like a relay drop, so another can connect.
+      // The lost path runs directly because some sockets never report their own close.
       phaseTimer = deadlineTimer(timeouts.handshakeTimeoutMs, request.expiresAt, () =>
-        fail(channelError("Enrollment channel handshake timed out.")),
+        loseSocket("Enrollment channel handshake timed out."),
       );
     };
     completionTimer = deadlineTimer(timeouts.completionTimeoutMs, request.expiresAt, () =>
       fail(channelError("Enrollment completion timed out.")),
     );
     const resetCandidate = () => {
-      if (state === "finished") return;
+      if (settled) return;
       clearTimeout(phaseTimer);
       state = "connected";
       peer = "";
@@ -283,45 +411,141 @@ function runHost(
       challenge = "";
       armCandidateTimer();
     };
-    const rejectCandidate = async (reason: unknown) => {
-      const activeCipher = cipher;
-      if (activeCipher) {
-        try {
-          await sendEncrypted(socket, identity.publicKey, "Failure", activeCipher, request, {
-            rejected: true,
-          });
-        } catch {
-          // The candidate is already unusable; keep the bounded host session available.
-        }
+    const answerCandidate = async (
+      activeCipher: ChannelCipher,
+      message: "TrustchainAddedMember" | "Failure",
+      payload: object,
+    ) => {
+      try {
+        await sendEncrypted(socket, identity.publicKey, message, activeCipher, request, payload);
+      } catch {
+        // The candidate may be gone already; the host session stays bounded either way.
       }
+    };
+    const dropCandidate = async (reason: HostRefusalReason) => {
+      if (cipher) await answerCandidate(cipher, "Failure", { reason });
       resetCandidate();
-      if (!(reason instanceof AgentIntentSdkError)) {
-        // Normalize callback failures without exposing their potentially sensitive details.
-        asChannelError(reason);
-      }
     };
     // Stops timers and keepalive itself rather than relying on the socket's close event.
     close = () => fail(channelError("This enrollment host session has been closed."));
     armCandidateTimer();
-    socket.addEventListener("open", () => {
-      if (state !== "finished") stopKeepAlive = keepRelayAlive(socket);
-    });
-    socket.addEventListener("error", () =>
-      fail(channelError("Enrollment relay connection failed.")),
-    );
-    socket.addEventListener("close", () =>
-      fail(channelError("Enrollment relay closed before completion was acknowledged.")),
-    );
-    socket.addEventListener("message", (event) => {
-      if (isRelayKeepAliveReply(event.data)) return;
+    const openReconnect = () => {
+      if (settled) return;
+      // Timers stop while a laptop sleeps, so the wall clock decides whether the request expired.
+      if (Date.parse(request.expiresAt) <= Date.now()) {
+        fail(channelError("Enrollment completion timed out."));
+        return;
+      }
+      let source: EnrollmentChannelWebSocket | undefined;
+      try {
+        source = openSocket();
+        attach(source, true);
+      } catch {
+        // A factory or socket that throws is retried like a failed open; the queue must not reject.
+        try {
+          source?.close();
+        } catch {
+          // The socket was never attached, so nothing reports its failure.
+        }
+        reconnect();
+      }
+    };
+    const reconnect = () => {
+      if (settled) return;
+      // A drop before any candidate keeps the running wait for the first one.
+      if (state !== "connected") resetCandidate();
+      const delay = HOST_RECONNECT_DELAYS_MS[attempts] ?? HOST_RECONNECT_MAX_DELAY_MS;
+      attempts += 1;
+      // The relay rejects a candidate that arrives while the host is away, so the first
+      // reopen does not wait for a timer.
+      if (delay === 0) openReconnect();
+      else reconnectTimer = setTimeout(openReconnect, delay);
+    };
+    const attach = (source: EnrollmentChannelWebSocket, reopened: boolean) => {
+      let opened = false;
+      let openedAt = 0;
+      let lost = false;
+      const onLost = (message: string) => {
+        if (lost || source !== socket || settled) return;
+        lost = true;
+        stopKeepAlive();
+        // A socket that only reported an error may still be open, and the relay keeps its
+        // candidate until it closes.
+        try {
+          source.close();
+        } catch {
+          // A socket that cannot close is already gone.
+        }
+        if ((!opened && !reopened) || state === "authenticating" || state === "persisting") {
+          fail(channelError(message));
+          return;
+        }
+        if (opened && performance.now() - openedAt >= HOST_RECONNECT_STABLE_MS) attempts = 0;
+        // Queued so a handler already running for this socket finishes before the reset.
+        messageQueue = messageQueue.then(reconnect);
+      };
+      source.addEventListener("open", () => {
+        opened = true;
+        openedAt = performance.now();
+        if (source === socket && !settled && !lost) {
+          stopKeepAlive = keepRelayAlive(source, () =>
+            onLost("Enrollment relay closed before completion was acknowledged."),
+          );
+        }
+      });
+      source.addEventListener("error", () => onLost("Enrollment relay connection failed."));
+      source.addEventListener("close", () =>
+        onLost("Enrollment relay closed before completion was acknowledged."),
+      );
+      source.addEventListener("message", (event) => {
+        if (source === socket && !isRelayKeepAliveReply(event.data)) {
+          handleMessage(event.data, () => lost);
+        }
+      });
+      socket = source;
+      loseSocket = onLost;
+    };
+    const failAsRejected = () =>
+      fail(
+        new AgentEnrollmentRejectedError(
+          isAgentRecoveryRequest(request) ? "recovery" : "enrollment",
+        ),
+      );
+    const recordShareCredential = (body: ShareCredential) => {
+      if (body.kind === "completion") completionReceived = true;
+      else if (!completionReceived) failAsRejected();
+    };
+    // A frame queued before the relay dropped its socket would answer a candidate that left, so
+    // nothing is sent and nothing is authenticated. The confirmed peer's frames still count: a
+    // completion blocks later rejections like one on a live socket (see `completionReceived`),
+    // and a rejection needs no answer.
+    const recordWithoutAnswer = async (data: unknown) => {
+      if (state !== "authenticated") return;
+      try {
+        const envelope = parseEnvelope(data);
+        assertPeer(envelope, peer);
+        if (envelope.message !== "TrustchainShareCredential") return;
+        const payload = await decryptPayload(requireCipher(cipher), envelope, request);
+        recordShareCredential(readShareCredential(payload, request));
+      } catch {
+        // Any other frame would only reset the candidate, which the reconnect does anyway.
+      }
+    };
+    const handleMessage = (data: unknown, lost: () => boolean) => {
       messageQueue = messageQueue
         .then(async () => {
-          const envelope = parseEnvelope(event.data);
+          if (settled) return;
+          if (lost()) {
+            await recordWithoutAnswer(data);
+            return;
+          }
+          const envelope = parseEnvelope(data);
           if (envelope.message === "Failure")
             throw channelError("The enrollment relay rejected the session.");
 
-          // A new candidate may replace one that has not delivered yet, so a frontend
-          // that lost its relay socket while waiting for device approval can reconnect.
+          // The relay admits one candidate per host socket and closes the host when it leaves,
+          // which attach() handles by reopening. A relay that admits another candidate before
+          // delivery still gets a fresh handshake here.
           if (
             envelope.message === "InitiateHandshake" &&
             (state === "connected" || state === "challenged" || state === "authenticated")
@@ -360,17 +584,40 @@ function runHost(
               request,
               {},
             );
+            if (settled) return;
             clearTimeout(phaseTimer);
             state = "authenticated";
             return;
           }
 
           if (state === "authenticated" && envelope.message === "TrustchainShareCredential") {
-            state = "authenticating";
             const activeCipher = requireCipher(cipher);
             const payload = await decryptPayload(activeCipher, envelope, request);
-            const serialized = stringField(payload, "completion");
-            const completion = parseChannelCompletion(serialized, request);
+            const body = readShareCredential(payload, request);
+            if (settled) return;
+            // The relay dropped the socket during decryption, so this is a queued frame too.
+            if (lost()) {
+              recordShareCredential(body);
+              return;
+            }
+            // Only a confirmed peer can reject, and only while no completion has been received.
+            if (body.kind === "rejection") {
+              if (completionReceived) {
+                await dropCandidate("completion-received");
+                return;
+              }
+              await answerCandidate(
+                activeCipher,
+                "TrustchainAddedMember",
+                REJECTION_ACKNOWLEDGEMENT,
+              );
+              // Settles before closing, so the relay's later close neither reconnects nor overrides it.
+              failAsRejected();
+              return;
+            }
+            state = "authenticating";
+            const { serialized, completion } = body;
+            completionReceived = true;
             try {
               await withinDeadline(
                 () => authenticate(completion),
@@ -378,10 +625,12 @@ function runHost(
                 request.expiresAt,
                 "Enrollment completion authentication timed out.",
               );
-            } catch (error) {
-              await rejectCandidate(error);
+            } catch {
+              // The callback's error may hold sensitive details, so the candidate only sees a reset.
+              await dropCandidate("reset");
               return;
             }
+            if (settled) return;
             state = "persisting";
             await withinDeadline(
               () => persist(completion),
@@ -400,6 +649,7 @@ function runHost(
                 digest: completionDigest(serialized),
               },
             );
+            settled = true;
             state = "finished";
             clearTimeout(completionTimer);
             clearTimeout(phaseTimer);
@@ -416,9 +666,10 @@ function runHost(
             fail(error);
             return;
           }
-          await rejectCandidate(error);
+          await dropCandidate("reset");
         });
-    });
+    };
+    attach(initialSocket, false);
   });
   return { completion, close: () => close() };
 }
@@ -427,7 +678,10 @@ type CandidateSession = {
   /** Settles once the handshake completes or the session fails. */
   readonly ready: Promise<void>;
   readonly failed: boolean;
+  /** Whether the host refused a rejection because it already received a completion. */
+  readonly rejectionRefused: boolean;
   deliver(completionPayload: string): Promise<void>;
+  reject(): Promise<void>;
   close(): void;
 };
 
@@ -439,31 +693,43 @@ function openCandidateSession(
   // Each session uses its own ephemeral key so a reconnect never shares a channel key.
   const identity = createSoftwareAgentIdentity();
   const publisher = identity.publicKey;
-  let state: "connecting" | "initiated" | "confirmed" | "ready" | "sent" | "finished" | "failed" =
-    "connecting";
+  let state:
+    | "connecting"
+    | "initiated"
+    | "confirmed"
+    | "ready"
+    | "sent"
+    | "rejecting"
+    | "finished"
+    | "failed" = "connecting";
   let cipher: ChannelCipher | undefined;
   let failure: AgentIntentSdkError | undefined;
   let phaseTimer: ReturnType<typeof setTimeout> | undefined;
   let stopKeepAlive: () => void = () => undefined;
   let messageQueue = Promise.resolve();
-  let delivery:
-    | { digest: string; resolve: () => void; reject: (reason: unknown) => void }
+  let deliveryDigest = "";
+  let awaitingAcknowledgement:
+    | { resolve: () => void; reject: (reason: unknown) => void }
     | undefined;
+  // What reject() reports instead of `failure` when the session fails the same way under a delivery.
+  let rejectionFailure: AgentIntentSdkError | undefined;
+  let rejectionRefused = false;
   let resolveReady: () => void = () => undefined;
   let rejectReady: (reason: unknown) => void = () => undefined;
   const ready = new Promise<void>((resolve, reject) => {
     resolveReady = resolve;
     rejectReady = reject;
   });
-  // Callers observe failures through connect()/deliver(); an idle session must not leak a rejection.
+  // Callers observe failures through connect(), deliver() and reject(); an idle session must not
+  // leak a rejection.
   ready.catch(() => undefined);
 
   const fail = failChannel(
-    socket,
+    () => socket.close(),
     (error) => {
       failure = asChannelError(error);
       rejectReady(failure);
-      delivery?.reject(failure);
+      awaitingAcknowledgement?.reject(failure);
     },
     () => state === "finished",
     () => {
@@ -473,17 +739,49 @@ function openCandidateSession(
       stopKeepAlive();
     },
   );
+  const failNamingRejection = (message: string, rejectionMessage: string) => {
+    if (state === "failed" || state === "finished") return;
+    rejectionFailure = channelError(rejectionMessage);
+    fail(channelError(message));
+  };
   // Bounds the whole session, including the device-approval gap between connect() and deliver().
   const sessionTimer = deadlineTimer(timeouts.completionTimeoutMs, request.expiresAt, () =>
-    fail(channelError("Enrollment completion delivery timed out.")),
+    failNamingRejection(
+      "Enrollment completion delivery timed out.",
+      "Enrollment rejection timed out.",
+    ),
   );
   phaseTimer = deadlineTimer(timeouts.handshakeTimeoutMs, request.expiresAt, () =>
     fail(channelError("Enrollment channel handshake timed out.")),
   );
-  socket.addEventListener("error", () => fail(channelError("Enrollment relay connection failed.")));
-  socket.addEventListener("close", () =>
-    fail(channelError("Enrollment relay closed before completion was acknowledged.")),
+  // The relay closes right after it forwards the host's refusal, so a lost socket is reported
+  // behind the frames already received. The session counts as failed at once, so that the next
+  // call opens a fresh one.
+  let socketLost = false;
+  const loseSocket = (report: () => void) => {
+    socketLost = true;
+    messageQueue = messageQueue.then(report);
+  };
+  socket.addEventListener("error", () =>
+    loseSocket(() => fail(channelError("Enrollment relay connection failed."))),
   );
+  socket.addEventListener("close", () =>
+    loseSocket(() =>
+      failNamingRejection(
+        "Enrollment relay closed before completion was acknowledged.",
+        state === "rejecting"
+          ? "Enrollment relay closed before the rejection was acknowledged."
+          : "Enrollment relay closed before the rejection was sent.",
+      ),
+    ),
+  );
+  const finish = () => {
+    state = "finished";
+    clearTimeout(phaseTimer);
+    clearTimeout(sessionTimer);
+    stopKeepAlive();
+    socket.close();
+  };
   socket.addEventListener("open", () => {
     if (state !== "connecting") return;
     try {
@@ -504,19 +802,28 @@ function openCandidateSession(
     messageQueue = messageQueue
       .then(async () => {
         const envelope = parseEnvelope(event.data);
-        if (envelope.publisher.toLowerCase() !== request.channel.hostPublicKey.toLowerCase()) {
-          throw channelError("Enrollment channel host does not match the signed request.");
-        }
+        const fromHost =
+          envelope.publisher.toLowerCase() === request.channel.hostPublicKey.toLowerCase();
         if (envelope.message === "Failure") {
-          if (cipher && "encrypted" in envelope.payload) {
-            await decryptPayload(cipher, envelope, request);
-            throw channelError(
-              state === "sent"
-                ? "The enrollment host rejected this completion."
-                : "The enrollment host reset this session.",
-            );
+          // The relay's own Failure does not carry the host key as publisher, and only the
+          // host's refusal decrypts.
+          const refusal = fromHost
+            ? await decryptPayload(cipher, envelope, request).catch(() => undefined)
+            : undefined;
+          if (refusal === undefined)
+            throw channelError("The enrollment relay rejected the session.");
+          if (state === "rejecting" && isReasonBody(refusal, "completion-received")) {
+            rejectionRefused = true;
+            throw channelError(REJECTION_REFUSED_MESSAGE);
           }
-          throw channelError("The enrollment relay rejected the session.");
+          throw channelError(
+            state === "sent"
+              ? "The enrollment host rejected this completion."
+              : "The enrollment host reset this session.",
+          );
+        }
+        if (!fromHost) {
+          throw channelError("Enrollment channel host does not match the signed request.");
         }
 
         if (state === "initiated" && envelope.message === "HandshakeChallenge") {
@@ -543,17 +850,24 @@ function openCandidateSession(
         if (state === "sent" && envelope.message === "TrustchainAddedMember") {
           const acknowledgement = await decryptPayload(cipher, envelope, request);
           if (
+            hasReason(acknowledgement) ||
             acknowledgement.acknowledged !== true ||
-            stringField(acknowledgement, "digest") !== delivery?.digest
+            stringField(acknowledgement, "digest") !== deliveryDigest
           ) {
             throw channelError("Enrollment completion acknowledgement is invalid.");
           }
-          state = "finished";
-          clearTimeout(phaseTimer);
-          clearTimeout(sessionTimer);
-          stopKeepAlive();
-          socket.close();
-          delivery.resolve();
+          finish();
+          awaitingAcknowledgement?.resolve();
+          return;
+        }
+
+        if (state === "rejecting" && envelope.message === "TrustchainAddedMember") {
+          const acknowledgement = await decryptPayload(cipher, envelope, request);
+          if (!isReasonBody(acknowledgement, REJECTION_ACKNOWLEDGEMENT.reason)) {
+            throw channelError("Enrollment rejection acknowledgement is invalid.");
+          }
+          finish();
+          awaitingAcknowledgement?.resolve();
           return;
         }
 
@@ -562,35 +876,65 @@ function openCandidateSession(
       .catch(fail);
   });
 
+  // A session carries one delivery or one rejection; either waits for the host to acknowledge it.
+  const sendAndAwaitAcknowledgement = (
+    next: "sent" | "rejecting",
+    payload: object,
+    timeoutMessage: string,
+  ): Promise<void> =>
+    new Promise<void>((resolve, reject) => {
+      if (state !== "ready") {
+        reject(failure ?? channelError("Enrollment channel is not connected."));
+        return;
+      }
+      state = next;
+      awaitingAcknowledgement = { resolve, reject };
+      messageQueue = messageQueue
+        .then(async () => {
+          await sendEncrypted(
+            socket,
+            publisher,
+            "TrustchainShareCredential",
+            requireCipher(cipher),
+            request,
+            payload,
+          );
+          if (state !== next) return;
+          phaseTimer = deadlineTimer(timeouts.acknowledgementTimeoutMs, request.expiresAt, () =>
+            fail(channelError(timeoutMessage)),
+          );
+        })
+        .catch(fail);
+    });
+
   return {
     ready,
     get failed() {
-      return state === "failed";
+      return state === "failed" || socketLost;
     },
-    deliver: (completionPayload) =>
-      new Promise<void>((resolve, reject) => {
-        if (state !== "ready") {
-          reject(failure ?? channelError("Enrollment channel is not connected."));
-          return;
-        }
-        state = "sent";
-        delivery = { digest: completionDigest(completionPayload), resolve, reject };
-        messageQueue = messageQueue
-          .then(async () => {
-            await sendEncrypted(
-              socket,
-              publisher,
-              "TrustchainShareCredential",
-              requireCipher(cipher),
-              request,
-              { completion: completionPayload },
-            );
-            phaseTimer = deadlineTimer(timeouts.acknowledgementTimeoutMs, request.expiresAt, () =>
-              fail(channelError("Enrollment completion acknowledgement timed out.")),
-            );
-          })
-          .catch(fail);
-      }),
+    get rejectionRefused() {
+      return rejectionRefused;
+    },
+    deliver: (completionPayload) => {
+      deliveryDigest = completionDigest(completionPayload);
+      return sendAndAwaitAcknowledgement(
+        "sent",
+        { completion: completionPayload },
+        "Enrollment completion acknowledgement timed out.",
+      );
+    },
+    reject: () =>
+      ready
+        .then(() =>
+          sendAndAwaitAcknowledgement(
+            "rejecting",
+            USER_REJECTION,
+            "Enrollment rejection acknowledgement timed out.",
+          ),
+        )
+        .catch((error: unknown) => {
+          throw rejectionFailure ?? error;
+        }),
     close: () => fail(channelError("This enrollment completion channel has been closed.")),
   };
 }
@@ -646,14 +990,7 @@ async function decryptPayload(
   if (!constantTimeEqual(cipher.requestDigest, signedRequestDigest(request))) {
     throw channelError("Enrollment channel request binding changed.");
   }
-  if (
-    Object.keys(envelope.payload).length !== 1 ||
-    !Object.prototype.hasOwnProperty.call(envelope.payload, "encrypted")
-  ) {
-    throw channelError("Enrollment channel encrypted envelope is malformed.");
-  }
-  const encoded = stringField(envelope.payload, "encrypted");
-  const blob = base64ToBytes(encoded);
+  const blob = base64ToBytes(ciphertextOf(envelope));
   if (blob.length <= 28) throw channelError("Enrollment channel payload is malformed.");
   try {
     const plaintext = await crypto.subtle.decrypt(
@@ -691,11 +1028,74 @@ async function sendEncrypted(
     publisher: publisher.toLowerCase(),
     message,
   } as const;
-  const encrypted = await encryptPayload(cipher, metadata, payload);
-  send(socket, {
+  send(socket, await sealEnvelope(cipher, metadata, payload));
+}
+
+/** Encrypts the payload into the field the relay forwards for this message. */
+async function sealEnvelope(
+  cipher: ChannelCipher,
+  metadata: Pick<RelayEnvelope, "version" | "publisher" | "message">,
+  payload: object,
+  nonce?: Uint8Array,
+): Promise<RelayEnvelope> {
+  const encrypted = await encryptPayload(cipher, metadata, payload, nonce);
+  return {
     ...metadata,
-    payload: { encrypted },
-  });
+    payload:
+      metadata.message === "Failure"
+        ? { type: HOST_REFUSAL_TYPE, message: encrypted }
+        : { encrypted },
+  };
+}
+
+/** Reads the ciphertext from where `sealEnvelope` puts it; any other payload shape is refused. */
+function ciphertextOf({ message, payload }: RelayEnvelope): string {
+  const fields = Object.keys(payload);
+  const field = message === "Failure" ? "message" : "encrypted";
+  if (
+    fields.length !== (message === "Failure" ? 2 : 1) ||
+    !Object.prototype.hasOwnProperty.call(payload, field) ||
+    (message === "Failure" && payload.type !== HOST_REFUSAL_TYPE)
+  ) {
+    throw channelError("Enrollment channel encrypted envelope is malformed.");
+  }
+  return stringField(payload, field);
+}
+
+type ShareCredential =
+  | { kind: "rejection" }
+  | { kind: "completion"; serialized: string; completion: AgentEnrollmentChannelCompletion };
+
+/**
+ * Reads a TrustchainShareCredential body, which is a completion or the user's rejection. Only
+ * the rejection carries a `reason`, so a body with one is exactly the rejection or invalid, and
+ * never a completion. An invalid body throws.
+ */
+function readShareCredential(
+  payload: Record<string, unknown>,
+  request: AgentEnrollmentChannelRequest,
+): ShareCredential {
+  if (hasReason(payload)) {
+    if (!isReasonBody(payload, USER_REJECTION.reason)) {
+      throw channelError("Enrollment channel rejection is invalid.");
+    }
+    return { kind: "rejection" };
+  }
+  const serialized = stringField(payload, "completion");
+  return {
+    kind: "completion",
+    serialized,
+    completion: parseChannelCompletion(serialized, request),
+  };
+}
+
+/** Only the bodies of a rejection and its answers carry a `reason`. */
+function hasReason(payload: Record<string, unknown>): boolean {
+  return Object.prototype.hasOwnProperty.call(payload, "reason");
+}
+
+function isReasonBody(payload: Record<string, unknown>, reason: string): boolean {
+  return Object.keys(payload).length === 1 && payload.reason === reason;
 }
 
 function send(socket: EnrollmentChannelWebSocket, envelope: RelayEnvelope): void {
@@ -703,15 +1103,26 @@ function send(socket: EnrollmentChannelWebSocket, envelope: RelayEnvelope): void
 }
 
 /** Pings the relay until the returned stop function runs. */
-function keepRelayAlive(socket: EnrollmentChannelWebSocket): () => void {
+function keepRelayAlive(socket: EnrollmentChannelWebSocket, onSilent?: () => void): () => void {
+  let deadline: ReturnType<typeof setTimeout> | undefined;
   const timer = setInterval(() => {
     try {
       socket.send(RELAY_KEEPALIVE_PING);
     } catch {
       // A socket that cannot send is closing; its close and error listeners report the failure.
     }
+    if (onSilent) {
+      clearTimeout(deadline);
+      deadline = setTimeout(onSilent, RELAY_PONG_TIMEOUT_MS);
+    }
   }, RELAY_KEEPALIVE_INTERVAL_MS);
-  return () => clearInterval(timer);
+  // Any frame proves the socket is alive, not only the pong. The socket type has no
+  // removeEventListener; once stopped, this listener only clears a cleared timer.
+  if (onSilent) socket.addEventListener("message", () => clearTimeout(deadline));
+  return () => {
+    clearInterval(timer);
+    clearTimeout(deadline);
+  };
 }
 
 function isRelayKeepAliveReply(data: unknown): boolean {
@@ -851,7 +1262,7 @@ function base64ToBytes(value: string): Uint8Array {
 }
 
 function failChannel(
-  socket: EnrollmentChannelWebSocket,
+  closeSocket: () => void,
   reject: (reason: unknown) => void,
   finished: () => boolean,
   beforeReject: () => void,
@@ -861,7 +1272,7 @@ function failChannel(
     if (failed || finished()) return;
     failed = true;
     beforeReject();
-    socket.close();
+    closeSocket();
     reject(asChannelError(reason));
   };
 }
@@ -996,6 +1407,17 @@ export const enrollmentChannelCryptoVectors = {
     const cipher = await makeCipher(sharedSecret, request);
     return encryptPayload(cipher, envelope, payload, nonce);
   },
+  /** The whole relay frame, as the channel sends it. */
+  envelope: async (
+    sharedSecret: Uint8Array,
+    request: AgentEnrollmentChannelRequest,
+    envelope: Pick<RelayEnvelope, "version" | "publisher" | "message">,
+    payload: object,
+    nonce: Uint8Array,
+  ): Promise<string> =>
+    JSON.stringify(
+      await sealEnvelope(await makeCipher(sharedSecret, request), envelope, payload, nonce),
+    ),
 };
 
 function asChannelError(reason: unknown): AgentIntentSdkError {

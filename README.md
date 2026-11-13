@@ -305,9 +305,21 @@ await candidate.deliver(completion); // resolves after the host acknowledges
 was lost (for example, the relay dropped the socket during device approval).
 If a delivery fails, for example because `authenticate` rejected it or the
 acknowledgement timed out, `deliver()` may be retried on the same candidate. Each
-retry opens a fresh session with a new ephemeral key, and a newly connecting
-candidate replaces one that has not delivered yet. A retry fails once the host has
-finished, closed, or timed out.
+retry opens a fresh session with a new ephemeral key. A retry fails once the host
+has finished, closed, or timed out.
+
+As observed (this is not a documented relay contract), the Trustchain relay runs
+a channel as one host and one candidate: it refuses a third socket and, when
+either side leaves, closes the other about a second later. Except while a
+completion is being authenticated or persisted, the host then reopens its socket
+on the same key, at once after the first drop and with a backoff after later
+ones (see [Security and timeouts](#security-and-timeouts)), so a reviewer who
+leaves the page can come back while the request is unexpired. A candidate that
+connects before the host is back is rejected by the relay with "The enrollment
+relay rejected the session."; a `connect()` or `deliver()` retry succeeds once
+the host has reconnected. After repeated quick drops the host can be away for up
+to 5 seconds of backoff plus the relay's close delay of about 1.5 seconds, so
+retry for at least 7 seconds.
 
 ### Recovery
 
@@ -339,6 +351,137 @@ request it accepts only a version-2 completion. `serializeAgentRecoveryCompletio
 frontend. The channel binding is optional and signed; an unbound recovery
 request keeps its earlier canonical bytes.
 
+### Rejection
+
+When the user rejects an enrollment or recovery request, the frontend tells the
+agent instead of leaving it to wait until the request expires:
+
+```ts
+await candidate.reject(); // resolves after the host acknowledges the rejection
+```
+
+On the host, `waitForCompletion` then rejects with
+`AgentEnrollmentRejectedError`, whose `kind` is `"enrollment"` or `"recovery"`.
+Nothing was authenticated or persisted. `isAgentEnrollmentRejectedError` checks
+for an `Error` with that `name` and a valid `kind` rather than using
+`instanceof`, so it also matches an error from another realm of the same process
+or another copy of the SDK. An error that went through a structured clone, such
+as `postMessage` to a worker, keeps neither its `name` nor its `kind`, so it no
+longer matches:
+
+```ts
+try {
+  await host.waitForCompletion({ request, authenticate, persist });
+} catch (error) {
+  if (!isAgentEnrollmentRejectedError(error)) throw error;
+  console.log(`The user rejected this ${error.kind} request.`);
+}
+```
+
+`reject()` connects first when no session is open, completes the
+key-confirmation handshake like `deliver()`, and waits for the acknowledgement.
+The handshake is bounded by `handshakeTimeoutMs`, the acknowledgement by
+`acknowledgementTimeoutMs`, and both by `completionTimeoutMs` and the request
+expiry. Its promise reports its own errors, never a delivery's: "Enrollment
+rejection acknowledgement timed out.", "Enrollment rejection timed out."
+(`completionTimeoutMs` or the request expiry), "Enrollment relay closed before
+the rejection was sent." (during the handshake), and "Enrollment relay closed
+before the rejection was acknowledged.". Once the host acknowledges, the
+candidate is done: `connect()`, `deliver()` and `reject()` throw "This
+enrollment request has already been rejected.". Like `deliver()`, `reject()`
+throws synchronously when the candidate was closed, a delivery or rejection is
+already running, or the request has expired.
+
+After any other failure, `reject()` may be retried on a fresh session, for
+example after the relay refused a candidate that arrived before the host
+reconnected. A failed `reject()` does not prove the host kept waiting: when the
+relay drops the host just as the rejection arrives, the host still honors it but
+its acknowledgement is lost, and a retry then finds no host. A host that never
+got the rejection waits until its timeouts or the request expiry.
+
+Never call `reject()` once the device has committed the enrollment to the
+Trustchain (the AddMember step): a rejection cannot undo that commit. The SDK
+cannot see the device step, so the caller must enforce this rule, and keep
+enforcing it across page reloads: a new candidate does not know that an earlier
+one committed. As a safety net, `reject()` throws once `deliver()` has been
+called on that candidate, even if the delivery failed, and the host refuses a
+rejection, from any candidate, once it has received a well-formed completion
+for this request. A completion that never reached the host leaves it accepting
+rejections. The host counts a completion as received once it parses, before
+`authenticate` runs, so a completion that then fails authentication, even
+transiently, still makes it refuse later rejections. Parsing does not prove the
+device committed, since anyone holding the link can build a well-formed
+completion, but the host cannot tell a forged completion from a committed one
+that failed to authenticate. Refusing costs at most a wait until the request
+expires; a rejection honored after a commit would leave a Trustchain member
+that its agent treats as rejected. That refusal is final: `reject()` fails with "The
+enrollment host already received a completion for this request; it can no
+longer be rejected." and later calls throw the same error, so retries do not
+keep making the relay drop the host, each drop delaying its next reopening.
+
+The relay forwards only the messages of its own protocol, in the order that
+protocol expects, and refuses anything else, so a rejection travels like a
+completion: the candidate sends it as `TrustchainShareCredential` and the host
+acknowledges it with `TrustchainAddedMember`. Both carry `{"encrypted":…}` and are bound to the
+signed request like every other channel message. Only a rejection and its
+acknowledgement carry a `reason`; a completion carries `completion`, and its
+acknowledgement `acknowledged` and `digest`. Each side accepts only the body it
+waits for, so neither takes a rejection for a completion or the reverse.
+
+The host turns a rejection or a completion down with a `Failure`. The relay
+reads a `Failure` as `{"type":…,"message":…}`, with a `type` from its own list,
+so the host's `Failure` has the type `UNEXPECTED_SHARE_CREDENTIAL` and carries
+its ciphertext in `message`, which the relay forwards untouched. As observed, the
+relay then closes both sides, so nothing follows a `Failure` on that socket.
+
+| Direction        | Message                     | Payload                                                   | Encrypted body                        | Meaning                                                                               |
+| ---------------- | --------------------------- | --------------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------- |
+| candidate → host | `TrustchainShareCredential` | `{"encrypted":…}`                                         | `{"reason":"user-rejected"}`          | The user rejected the request.                                                        |
+| host → candidate | `TrustchainAddedMember`     | `{"encrypted":…}`                                         | `{"reason":"rejection-acknowledged"}` | The host accepted the rejection and ended its session.                                |
+| host → candidate | `Failure`                   | `{"type":"UNEXPECTED_SHARE_CREDENTIAL","message":…}`      | `{"reason":"completion-received"}`    | The host refused the rejection: it already received a completion.                     |
+| host → candidate | `Failure`                   | `{"type":"UNEXPECTED_SHARE_CREDENTIAL","message":…}`      | `{"reason":"reset"}`                  | The host turned down a completion or an unexpected frame, and dropped this candidate. |
+| relay → either   | `Failure`                   | `{"type":"…","message":"…"}`, from the all-zero publisher | none                                  | The relay refused the session.                                                        |
+
+The candidate reads a `Failure` as the host's only when it comes from the host
+key, has the type `UNEXPECTED_SHARE_CREDENTIAL`, and decrypts. Any other
+`Failure` is the relay's own and fails the session with "The enrollment relay
+rejected the session.". Because the relay closes right after a `Failure`, the
+candidate reads the frames it already received before it reports the close.
+While rejecting, the candidate treats only `rejection-acknowledged` as success
+and `completion-received` as the final refusal. Any other host `Failure`, such
+as `reset`, makes `reject()` fail with "The enrollment host reset this
+session.", which a retry on a fresh session may overcome.
+
+A host whose SDK predates rejection reads the rejection as a malformed
+completion and answers with a `Failure` the relay refuses, so `reject()` fails
+with a relay error and that host keeps waiting within its usual
+`candidateTimeoutMs`, `completionTimeoutMs` and the request expiry. Callers that
+must not wait, such as a page the user is leaving, bound `reject()` themselves.
+
+The host accepts a rejection only from the candidate that completed key
+confirmation on its current socket, and only while it has received no
+well-formed completion for this request. A rejection that does not decrypt,
+comes from another key, arrives before key confirmation, carries another reason,
+or carries anything besides its `reason` is handled like any unexpected frame:
+it never ends the host session, but the host drops its current candidate, even a
+confirmed one, and waits for another. So is any `Failure` the host receives,
+which is always the relay's. A forged frame can therefore interrupt a reviewer,
+who then rejects again on a fresh session, but cannot reject the request. A
+rejection that arrives while a completion is being authenticated or persisted
+waits behind it and has no effect. Frames from the confirmed candidate that the
+host reads after the relay dropped its socket get no answer, but still count: a
+rejection ends the session, and a well-formed completion, which the host then
+neither authenticates nor persists, makes it refuse later rejections. After
+accepting a rejection, the host acknowledges it, stops its timers and keepalive,
+closes its socket, and does not reconnect; the relay closing the host afterwards
+does not change the error.
+
+Anyone who holds the signed link can complete the key-confirmation handshake, so
+anyone who holds it can also reject the request, or send a well-formed
+completion that makes the host refuse rejections. The link already grants that
+much: it is what lets its holder reach the agent at all. The relay cannot forge
+a rejection, because it never holds the channel key.
+
 ### Security and timeouts
 
 The channel key and every encrypted envelope are bound to the exact signed
@@ -352,11 +495,37 @@ handshake and the delivered completion (device approval) is bounded only by
 the candidate. Applications may override these with the `timeouts` option.
 While a session is open, both sides send the relay a text `ping` every 60
 seconds, because the Trustchain relay drops a client after 5 minutes without a
-frame sent to it. A failed `authenticate` call rejects only that delivery, so
-the same or a later candidate can complete the same bounded host session. A
-persistence failure closes the session without acknowledging. If enrollment was
-committed before delivery failed, re-enroll the agent with a channel-bound
-recovery request.
+frame sent to it. The host also expects a frame back within 10 seconds of each
+ping, normally the relay's `pong`; otherwise it treats the socket as dropped,
+closes it, and reconnects as described below. A failed `authenticate` call
+rejects only that delivery, so the same or a later candidate can complete the
+same bounded host session. A persistence failure closes the session without
+acknowledging. If enrollment was committed before delivery failed, re-enroll the
+agent with a channel-bound recovery request.
+
+The host does not limit how often it reopens its relay socket. It reopens at
+once after the first drop, then after 1, 2 and 4 seconds, then every 5 seconds.
+A reopened socket that fails before connecting, a handshake timeout, and a
+missed ping reply follow the same backoff. A socket that stayed open for at
+least 60 seconds before it was lost restarts the backoff; a missed ping reply is
+detected at least 70 seconds after the socket opened, so the host reopens at
+once after one. That window uses a monotonic clock, so a wall-clock change does
+not move it. A candidate that does not finish the handshake within
+`handshakeTimeoutMs` no longer fails the host: the host closes that socket and
+reopens it like a relay drop, with a fresh wait for the next candidate.
+Reconnecting never extends `completionTimeoutMs` or the request expiry. The host
+stops and fails the session when:
+
+- the request expires or `completionTimeoutMs` elapses;
+- no candidate connects within `candidateTimeoutMs`, a wait that restarts on
+  each reconnect after a candidate had connected;
+- `close()` is called;
+- the initial socket fails before it opens;
+- persistence fails, or a socket is lost while a completion is being
+  authenticated or persisted.
+
+Before each reopen the host also checks the signed request expiry against the
+wall clock, so it does not reconnect after a laptop slept past the expiry.
 
 The channel sends only the agent public key, App-18 Trustchain ID, and safe
 App-16 environment/root/path references. It must never carry a serialized
