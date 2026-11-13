@@ -401,15 +401,20 @@ got the rejection waits until its timeouts or the request expiry.
 
 Never call `reject()` once the device has committed the enrollment to the
 Trustchain (the AddMember step): a rejection cannot undo that commit. The SDK
-cannot see the device step, so the caller must enforce this rule. As a safety
-net, `reject()` throws once `deliver()` has been called on that candidate, even
-if the delivery failed, and the host refuses a rejection, from any candidate,
-once it has received a well-formed completion for this request. The host counts
-a completion as received once it parses, before `authenticate` runs, so a
-completion that then fails authentication, even transiently, still makes it
-refuse later rejections: the device committed AddMember before the frontend
-delivered it, and a rejection honored then would leave a Trustchain member that
-its agent treats as rejected. That refusal is final: `reject()` fails with "The
+cannot see the device step, so the caller must enforce this rule, and keep
+enforcing it across page reloads: a new candidate does not know that an earlier
+one committed. As a safety net, `reject()` throws once `deliver()` has been
+called on that candidate, even if the delivery failed, and the host refuses a
+rejection, from any candidate, once it has received a well-formed completion
+for this request. A completion that never reached the host leaves it accepting
+rejections. The host counts a completion as received once it parses, before
+`authenticate` runs, so a completion that then fails authentication, even
+transiently, still makes it refuse later rejections. Parsing does not prove the
+device committed, since anyone holding the link can build a well-formed
+completion, but the host cannot tell a forged completion from a committed one
+that failed to authenticate. Refusing costs at most a wait until the request
+expires; a rejection honored after a commit would leave a Trustchain member
+that its agent treats as rejected. That refusal is final: `reject()` fails with "The
 enrollment host already received a completion for this request; it can no
 longer be rejected." and later calls throw the same error, so retries do not
 keep making the relay drop the host, each drop delaying its next reopening.

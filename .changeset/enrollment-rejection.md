@@ -15,8 +15,11 @@ neither side takes a rejection for a completion or the reverse. Never call it
 once the device has committed the enrollment to the Trustchain: it throws once
 `deliver()` has been called, and the host refuses a rejection for good, with
 `{ reason: "completion-received" }`, once it has received a well-formed
-completion for the request. After any other failure `reject()` may be retried,
-although the host may already have honored the rejection.
+completion for the request, even one that then fails authentication. Neither
+check survives a page reload after a delivery that never reached the host, so
+the frontend must remember the device commit itself. After any other failure
+`reject()` may be retried, although the host may already have honored the
+rejection.
 
 The host then ends its session for good: `waitForCompletion` rejects with the
 new `AgentEnrollmentRejectedError`, whose `kind` is `"enrollment"` or

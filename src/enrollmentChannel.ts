@@ -137,11 +137,12 @@ export type AgentEnrollmentChannelCandidate = {
    * Tells the host that the user rejected the signed request and resolves once
    * the host acknowledges it; the candidate is then unusable. Connects first
    * when no session is open. Never call it once the device has committed the
-   * enrollment to the Trustchain: a rejection cannot undo that commit. It throws
-   * once `deliver()` has been called, and fails for good once the host answers
-   * that it already received a completion for this request. After any other
-   * failure the host may still have honored the rejection, and `reject()` may be
-   * retried on a fresh session.
+   * enrollment to the Trustchain: a rejection cannot undo that commit. The caller
+   * must remember that commit across page reloads, because a new candidate cannot
+   * know it. It throws once `deliver()` has been called, and fails for good once
+   * the host answers that it already received a completion for this request.
+   * After any other failure the host may still have honored the rejection, and
+   * `reject()` may be retried on a fresh session.
    */
   reject(): Promise<void>;
   close(): void;
@@ -362,8 +363,10 @@ function runHost(
     // Set once the session resolves or fails; a handler resuming after an await can still
     // move `state`, so reconnects and timers check this instead.
     let settled = false;
-    // Survives candidate resets: the frontend delivers only after the device committed the
-    // enrollment to the Trustchain, so a later rejection could not undo it.
+    // Survives candidate resets. A parsed completion does not prove the device committed, since
+    // the link is enough to build one, but neither does a failed authenticate() disprove it.
+    // Refusing a rejection then costs a wait until expiry; honoring one after a real commit would
+    // leave a Trustchain member whose agent treats it as rejected.
     let completionReceived = false;
     let attempts = 0;
     let loseSocket: (message: string) => void = () => undefined;
@@ -510,7 +513,8 @@ function runHost(
       );
     // A frame queued before the relay dropped its socket would answer a candidate that left, so
     // nothing is sent and nothing is authenticated. The confirmed peer's frames still count: a
-    // completion means the device committed the enrollment, and a rejection needs no answer.
+    // completion blocks later rejections like one on a live socket (see `completionReceived`),
+    // and a rejection needs no answer.
     const recordWithoutAnswer = async (data: unknown) => {
       if (state !== "authenticated") return;
       try {
