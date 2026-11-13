@@ -9,6 +9,11 @@
       "description": "Hold npm updates whose release date Renovate cannot read, so the seven-day minimum release age applies",
       "matchDatasources": ["npm"],
       "minimumReleaseAgeBehaviour": "timestamp-required"
+    },
+    {
+      "description": "Open major update pull requests only after approval on the Dependency Dashboard",
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
     }
   ]
 }
