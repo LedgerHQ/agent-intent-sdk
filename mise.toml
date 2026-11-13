@@ -7,6 +7,6 @@ lockfile_platforms = ["linux-arm64", "linux-x64", "macos-arm64", "macos-x64"]
 
 [tools]
 node = "24.22.2"
-pnpm = "12.11.2"
+pnpm = "12.18.0"
 actionlint = "v1.7.12"
 zizmor = "v1.30.1"
