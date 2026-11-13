@@ -1639,6 +1639,48 @@ describe("encrypted enrollment channel", () => {
       await expect(waiting).resolves.toMatchObject({ trustchainId: "after-drop" });
     });
 
+    it("drops a completion whose socket the relay dropped while it was decrypted", async () => {
+      const setup = pairedHost();
+      const { isSettled } = setup.start();
+      const first = setup.candidate();
+      await first.connect();
+
+      const decrypt = crypto.subtle.decrypt.bind(crypto.subtle);
+      vi.spyOn(crypto.subtle, "decrypt").mockImplementationOnce((...args) => {
+        setup.relay.hostSockets[0]?.drop();
+        return decrypt(...args);
+      });
+      void first.deliver(completionFor(setup.agent.publicKey, "dropped")).catch(() => undefined);
+      await vi.waitFor(() => expect(setup.relay.hostSockets).toHaveLength(2));
+      await vi.advanceTimersByTimeAsync(setup.relay.peerCloseDelayMs);
+      expect(setup.authenticate).not.toHaveBeenCalled();
+      expect(setup.persist).not.toHaveBeenCalled();
+
+      await expect(setup.candidate().reject()).rejects.toThrow(/can no longer be rejected/);
+      expect(isSettled()).toBe(false);
+    });
+
+    it("does not authenticate a completion once the host closed while it was decrypted", async () => {
+      const setup = pairedHost();
+      const { waiting } = setup.start();
+      const candidate = setup.candidate();
+      await candidate.connect();
+
+      const decrypt = crypto.subtle.decrypt.bind(crypto.subtle);
+      let decrypted: Promise<ArrayBuffer> | undefined;
+      vi.spyOn(crypto.subtle, "decrypt").mockImplementationOnce((...args) => {
+        setup.host.close();
+        decrypted = decrypt(...args);
+        return decrypted;
+      });
+      void candidate.deliver(completionFor(setup.agent.publicKey, "late")).catch(() => undefined);
+      await expect(waiting).rejects.toThrow(/has been closed/);
+      await decrypted;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(setup.authenticate).not.toHaveBeenCalled();
+      expect(setup.persist).not.toHaveBeenCalled();
+    });
+
     it("re-arms the candidate wait after a drop once a candidate was authenticated", async () => {
       const setup = pairedHost({ ...reconnectTimeouts(), candidateTimeoutMs: 10_000 });
       const { waiting, isSettled } = setup.start();

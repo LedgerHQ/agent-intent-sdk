@@ -511,6 +511,10 @@ function runHost(
           isAgentRecoveryRequest(request) ? "recovery" : "enrollment",
         ),
       );
+    const recordShareCredential = (body: ShareCredential) => {
+      if (body.kind === "completion") completionReceived = true;
+      else if (!completionReceived) failAsRejected();
+    };
     // A frame queued before the relay dropped its socket would answer a candidate that left, so
     // nothing is sent and nothing is authenticated. The confirmed peer's frames still count: a
     // completion blocks later rejections like one on a live socket (see `completionReceived`),
@@ -522,9 +526,7 @@ function runHost(
         assertPeer(envelope, peer);
         if (envelope.message !== "TrustchainShareCredential") return;
         const payload = await decryptPayload(requireCipher(cipher), envelope, request);
-        const body = readShareCredential(payload, request);
-        if (body.kind === "completion") completionReceived = true;
-        else if (!completionReceived) failAsRejected();
+        recordShareCredential(readShareCredential(payload, request));
       } catch {
         // Any other frame would only reset the candidate, which the reconnect does anyway.
       }
@@ -592,6 +594,12 @@ function runHost(
             const activeCipher = requireCipher(cipher);
             const payload = await decryptPayload(activeCipher, envelope, request);
             const body = readShareCredential(payload, request);
+            if (settled) return;
+            // The relay dropped the socket during decryption, so this is a queued frame too.
+            if (lost()) {
+              recordShareCredential(body);
+              return;
+            }
             // Only a confirmed peer can reject, and only while no completion has been received.
             if (body.kind === "rejection") {
               if (completionReceived) {
