@@ -63,6 +63,7 @@ jobs:
         uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           cache: false
+          minimum_release_age: 7d
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -101,6 +102,7 @@ jobs:
         uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           cache: false
+          minimum_release_age: 7d
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
