@@ -14,6 +14,7 @@ import {
 } from "./enrollmentChannel.ts";
 import { createSoftwareAgentIdentity } from "./identity.ts";
 import { createAgentRecoveryRequest } from "./recovery.ts";
+import { createAgentRingAccessRequest } from "./ringAccess.ts";
 
 export const RELAY_URL = "https://trustchain.example";
 
@@ -421,6 +422,26 @@ export function recoveryChannelRequest(
     description: "Proposes portfolio operations.",
     source: "hermes",
     previousTrustchainId: "app-18-root",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    channel,
+  });
+}
+
+export const RING_ACCESS_ENCRYPTION_KEY = createSoftwareAgentIdentity(
+  "00".repeat(31) + "04",
+).publicKey;
+
+export function ringAccessChannelRequest(
+  agent: ReturnType<typeof createSoftwareAgentIdentity>,
+  channel: { environment: "staging" | "production"; hostPublicKey: string },
+  encryptionPublicKey = RING_ACCESS_ENCRYPTION_KEY,
+) {
+  return createAgentRingAccessRequest(agent, {
+    encryptionPublicKey,
+    name: "Portfolio Bot",
+    description: "Proposes portfolio operations.",
+    source: "claude-code",
+    trustchainId: "app-18-root",
     expiresAt: "2099-01-01T00:00:00.000Z",
     channel,
   });

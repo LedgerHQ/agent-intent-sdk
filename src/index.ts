@@ -14,6 +14,7 @@ export {
   type AgentEnrollmentChannelHost,
   type AgentEnrollmentChannelRequest,
   type AgentEnrollmentChannelTimeouts,
+  type AgentEnrollmentRejectionKind,
   type EnrollmentChannelWebSocket,
   type EnrollmentChannelWebSocketFactory,
 } from "./enrollmentChannel.ts";
@@ -22,6 +23,7 @@ export * from "./identity.ts";
 export * from "./intentPage.ts";
 export * from "./intents.ts";
 export * from "./recovery.ts";
+export * from "./ringAccess.ts";
 export {
   AGENT_DESCRIPTION_MAX_LENGTH,
   AGENT_NAME_MAX_LENGTH,

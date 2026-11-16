@@ -1,4 +1,5 @@
 import { secp256k1 } from "@noble/curves/secp256k1.js";
+import { hexToBytes } from "./bytes.ts";
 
 export const AGENT_NAME_MAX_LENGTH = 80;
 export const AGENT_DESCRIPTION_MAX_LENGTH = 280;
@@ -6,9 +7,10 @@ const AGENT_LINK_HEX_LENGTHS = {
   publicKey: [66, 130],
   signature: [128],
   channelHost: [66],
+  encryptionPublicKey: [66],
 } as const;
 
-const AGENT_LINK_FIELDS = [
+const RECOVERY_LINK_FIELDS = [
   "v",
   "recovery",
   "publicKey",
@@ -22,7 +24,23 @@ const AGENT_LINK_FIELDS = [
   "signature",
 ] as const;
 
-export type AgentLinkField = (typeof AGENT_LINK_FIELDS)[number];
+const RING_ACCESS_LINK_FIELDS = [
+  "v",
+  "publicKey",
+  "encryptionPublicKey",
+  "name",
+  "description",
+  "source",
+  "trustchainId",
+  "expiresAt",
+  "channelEnvironment",
+  "channelHost",
+  "signature",
+] as const;
+
+export type AgentLinkField =
+  | (typeof RECOVERY_LINK_FIELDS)[number]
+  | (typeof RING_ACCESS_LINK_FIELDS)[number];
 
 type AgentLinkHexField = keyof typeof AGENT_LINK_HEX_LENGTHS;
 
@@ -52,6 +70,8 @@ type AgentLinkFields = {
   channel?: { environment: "staging" | "production"; hostPublicKey: string };
 };
 
+type AgentLinkChannel = NonNullable<AgentLinkFields["channel"]>;
+
 type AgentLinkCheck<Fields> = { fields: Fields } | { issues: AgentLinkIssues };
 
 type ChannelField = "channelEnvironment" | "channelHost";
@@ -64,6 +84,7 @@ const TRAILING_PUNCTUATION = /[\s.,;:!?'")\]}>]/;
 const UNCOMPRESSED_PUBLIC_KEY_LENGTH = AGENT_LINK_HEX_LENGTHS.publicKey[1];
 const CHANNEL_FIELDS: readonly ChannelField[] = ["channelEnvironment", "channelHost"];
 const UNSUPPORTED_ENROLLMENT_FIELDS = ["permissions", "permission", "type"];
+const COMPRESSED_KEY_FIELDS: readonly AgentLinkHexField[] = ["channelHost", "encryptionPublicKey"];
 
 export function checkEnrollmentLink(
   search: Record<string, unknown>,
@@ -97,14 +118,66 @@ export function checkRecoveryLink(
     expiryIssue(search.expiresAt, rejected),
     ...(bound ? boundChannelIssues(search) : unboundChannelIssues(search, false, rejected)),
     hexIssue("signature", search.signature),
-    ...Object.keys(search)
-      .filter((key) => !(AGENT_LINK_FIELDS as readonly string[]).includes(key))
-      .map(unexpected),
+    ...unexpectedIssues(search, RECOVERY_LINK_FIELDS),
   ]);
   return linkCheck(issues, () => ({
     ...linkFields(search, bound),
     previousTrustchainId: search.previousTrustchainId as string,
   }));
+}
+
+export function checkRingAccessLink(
+  search: Record<string, unknown>,
+  version: string,
+): AgentLinkCheck<
+  Omit<AgentLinkFields, "channel"> & {
+    encryptionPublicKey: string;
+    trustchainId: string;
+    channel: AgentLinkChannel;
+  }
+> {
+  const issues = linkIssues((rejected) => [
+    versionIssue(search.v, [version]),
+    hexIssue("publicKey", search.publicKey),
+    encryptionKeyIssue(search),
+    ...agentDetailsIssues(search),
+    presenceIssue("trustchainId", search.trustchainId),
+    expiryIssue(search.expiresAt, rejected),
+    ...boundChannelIssues(search),
+    hexIssue("signature", search.signature),
+    ...unexpectedIssues(search, RING_ACCESS_LINK_FIELDS),
+  ]);
+  return linkCheck(issues, () => ({
+    ...linkFields(search, false),
+    encryptionPublicKey: (search.encryptionPublicKey as string).toLowerCase(),
+    trustchainId: search.trustchainId as string,
+    channel: boundChannel(search),
+  }));
+}
+
+export function hasAgentLinkHexLength(field: AgentLinkHexField, value: unknown): boolean {
+  const lengths: readonly number[] = AGENT_LINK_HEX_LENGTHS[field];
+  return typeof value === "string" && HEX.test(value) && lengths.includes(value.length);
+}
+
+export function verifyAgentLinkSignature(
+  request: { signature: string; publicKey: string },
+  canonicalPayload: () => Uint8Array,
+): boolean {
+  try {
+    return secp256k1.verify(
+      hexToBytes(request.signature),
+      canonicalPayload(),
+      hexToBytes(request.publicKey),
+      {
+        prehash: true,
+        lowS: false,
+        format: "compact",
+      },
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function malformedLink(message: string, issues: AgentLinkIssues): MalformedAgentLink {
@@ -163,24 +236,38 @@ function linkFields(search: Record<string, unknown>, bound: boolean): AgentLinkF
     source: text("source"),
     expiresAt: text("expiresAt"),
     signature: text("signature").toLowerCase(),
-    ...(bound
-      ? {
-          channel: {
-            environment: text("channelEnvironment") as "staging" | "production",
-            hostPublicKey: text("channelHost").toLowerCase(),
-          },
-        }
-      : {}),
+    ...(bound ? { channel: boundChannel(search) } : {}),
+  };
+}
+
+function boundChannel(search: Record<string, unknown>): AgentLinkChannel {
+  return {
+    environment: search.channelEnvironment as AgentLinkChannel["environment"],
+    hostPublicKey: (search.channelHost as string).toLowerCase(),
   };
 }
 
 function metadataIssues(search: Record<string, unknown>): (AgentLinkIssue | undefined)[] {
+  return [hexIssue("publicKey", search.publicKey), ...agentDetailsIssues(search)];
+}
+
+function agentDetailsIssues(search: Record<string, unknown>): (AgentLinkIssue | undefined)[] {
   return [
-    hexIssue("publicKey", search.publicKey),
     textIssue("name", search.name, AGENT_NAME_MAX_LENGTH),
     textIssue("description", search.description, AGENT_DESCRIPTION_MAX_LENGTH),
     presenceIssue("source", search.source),
   ];
+}
+
+function encryptionKeyIssue(search: Record<string, unknown>): AgentLinkIssue | undefined {
+  const issue = hexIssue("encryptionPublicKey", search.encryptionPublicKey);
+  if (issue) return issue;
+  // Key Ring access gets a dedicated key, so the App-18 signing key never becomes an App-17 member.
+  const signingKey = compressedPublicKey(search.publicKey);
+  return signingKey !== undefined &&
+    signingKey === (search.encryptionPublicKey as string).toLowerCase()
+    ? invalidValue("encryptionPublicKey")
+    : undefined;
 }
 
 function presenceIssue(field: AgentLinkField, value: unknown): AgentLinkIssue | undefined {
@@ -224,11 +311,16 @@ function hexIssue(field: AgentLinkHexField, value: unknown): AgentLinkIssue | un
   const presence = presenceIssue(field, value);
   if (presence) return presence;
   const hex = value as string;
-  const lengths: readonly number[] = AGENT_LINK_HEX_LENGTHS[field];
-  if (HEX.test(hex) && lengths.includes(hex.length)) {
-    return field === "channelHost" && !isCompressedPublicKey(hex) ? invalidValue(field) : undefined;
+  if (hasAgentLinkHexLength(field, hex)) {
+    return COMPRESSED_KEY_FIELDS.includes(field) && !isCompressedPublicKey(hex)
+      ? invalidValue(field)
+      : undefined;
   }
-  if (field === "channelHost" && HEX.test(hex) && hex.length === UNCOMPRESSED_PUBLIC_KEY_LENGTH) {
+  if (
+    COMPRESSED_KEY_FIELDS.includes(field) &&
+    HEX.test(hex) &&
+    hex.length === UNCOMPRESSED_PUBLIC_KEY_LENGTH
+  ) {
     return invalidValue(field);
   }
   const expectedLength =
@@ -277,6 +369,15 @@ function invalidValue(field: AgentLinkField): AgentLinkIssue {
   return { field, problem: "invalid-value" };
 }
 
+function unexpectedIssues(
+  search: Record<string, unknown>,
+  allowed: readonly AgentLinkField[],
+): AgentLinkIssue[] {
+  return Object.keys(search)
+    .filter((key) => !(allowed as readonly string[]).includes(key))
+    .map(unexpected);
+}
+
 function unexpected(parameter: string): AgentLinkIssue {
   return { problem: "unexpected", parameter };
 }
@@ -285,11 +386,15 @@ function definedIssues(issues: (AgentLinkIssue | undefined)[]): AgentLinkIssue[]
   return issues.filter((issue) => issue !== undefined);
 }
 
-function isCompressedPublicKey(value: string): boolean {
+function compressedPublicKey(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
   try {
-    secp256k1.Point.fromHex(value);
-    return true;
+    return secp256k1.Point.fromHex(value).toHex(true);
   } catch {
-    return false;
+    return undefined;
   }
+}
+
+function isCompressedPublicKey(value: string): boolean {
+  return compressedPublicKey(value) !== undefined;
 }

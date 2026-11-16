@@ -28,6 +28,7 @@ import {
   relayFailure,
   channelRequest,
   recoveryChannelRequest,
+  ringAccessChannelRequest,
   completionFor,
   TestRelay,
 } from "./enrollmentChannel.test-support.ts";
@@ -87,6 +88,19 @@ describe("encrypted enrollment channel", () => {
         kind: "recovery",
         message: "The user rejected this agent recovery request.",
       });
+      expect(setup.persist).not.toHaveBeenCalled();
+    });
+
+    it("rejects a ring access request the same way", async () => {
+      const setup = waitingHost(ringAccessChannelRequest);
+
+      await expect(setup.candidate().reject()).resolves.toBeUndefined();
+      await expect(setup.waiting).rejects.toMatchObject({
+        name: "AgentEnrollmentRejectedError",
+        kind: "ring-access",
+        message: "The user rejected this agent ring access request.",
+      });
+      expect(setup.authenticate).not.toHaveBeenCalled();
       expect(setup.persist).not.toHaveBeenCalled();
     });
 
@@ -759,6 +773,9 @@ describe("encrypted enrollment channel", () => {
 
     it("recognizes a rejection error by shape, including from another realm", () => {
       expect(isAgentEnrollmentRejectedError(new AgentEnrollmentRejectedError("recovery"))).toBe(
+        true,
+      );
+      expect(isAgentEnrollmentRejectedError(new AgentEnrollmentRejectedError("ring-access"))).toBe(
         true,
       );
       const foreign: unknown = runInNewContext(
