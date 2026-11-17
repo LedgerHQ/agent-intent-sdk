@@ -24,6 +24,7 @@ import {
   completionFor,
   shortTimeouts,
   TestRelay,
+  waitingHost,
 } from "./enrollmentChannel.test-support.ts";
 
 describe("encrypted enrollment channel", () => {
@@ -127,6 +128,21 @@ describe("encrypted enrollment channel", () => {
       persist.mock.invocationCallOrder[0]!,
     );
     expect(relay.sockets.every((socket) => socket.closed)).toBe(true);
+  });
+
+  it("delivers a version-1 completion without account access", async () => {
+    const setup = waitingHost();
+    const agentPubkey = setup.agent.publicKey;
+    const expected = { version: 1, agentPubkey, trustchainId: "app-18-id" };
+
+    await expect(
+      setup
+        .candidate()
+        .deliver(serializeAgentEnrollmentCompletion({ agentPubkey, trustchainId: "app-18-id" })),
+    ).resolves.toBeUndefined();
+    await expect(setup.waiting).resolves.toEqual(expected);
+    expect(setup.authenticate).toHaveBeenCalledExactlyOnceWith(expected);
+    expect(setup.persist).toHaveBeenCalledExactlyOnceWith(expected);
   });
 
   it("rejects an unauthenticated candidate, then accepts a valid candidate", async () => {
@@ -887,6 +903,14 @@ describe("encrypted enrollment channel", () => {
     );
     await expect(
       candidate.deliver(
+        serializeAgentEnrollmentCompletion({
+          agentPubkey: agent.publicKey,
+          trustchainId: "app-18-root",
+        }),
+      ),
+    ).rejects.toThrow(/host rejected/);
+    await expect(
+      candidate.deliver(
         serializeAgentRecoveryCompletion({
           agentPubkey: agent.publicKey,
           previousTrustchainId: "app-18-root",
@@ -898,6 +922,21 @@ describe("encrypted enrollment channel", () => {
     expect(persist).not.toHaveBeenCalled();
     expect(hostFailure).not.toHaveBeenCalled();
     host.close();
+
+    const enrollment = waitingHost();
+    await expect(
+      enrollment.candidate().deliver(
+        serializeAgentRecoveryCompletion({
+          agentPubkey: enrollment.agent.publicKey,
+          previousTrustchainId: "app-18-root",
+          requestSignature: enrollment.request.signature,
+          trustchainId: "app-18-root",
+        }),
+      ),
+    ).rejects.toThrow(/host rejected/);
+    expect(enrollment.persist).not.toHaveBeenCalled();
+    expect(enrollment.hostFailure).not.toHaveBeenCalled();
+    enrollment.host.close();
   });
 
   it("requires a channel binding on recovery requests", () => {
