@@ -143,6 +143,7 @@ describe("encrypted enrollment channel", () => {
     await expect(setup.waiting).resolves.toEqual(expected);
     expect(setup.authenticate).toHaveBeenCalledExactlyOnceWith(expected);
     expect(setup.persist).toHaveBeenCalledExactlyOnceWith(expected);
+    expect(setup.relay.sockets.every((socket) => socket.closed)).toBe(true);
   });
 
   it("rejects an unauthenticated candidate, then accepts a valid candidate", async () => {
