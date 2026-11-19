@@ -1,5 +1,11 @@
 # @ledgerhq/agent-intent-sdk
 
+## 0.4.0
+
+### Minor Changes
+
+- [#59](https://github.com/LedgerHQ/agent-intent-sdk/pull/59) [`87037c0`](https://github.com/LedgerHQ/agent-intent-sdk/commit/87037c0439eea6e9da74c69a1a31e2b1a545204f) Thanks [@michalmisiejuk-ext-collab](https://github.com/michalmisiejuk-ext-collab)! - The enrollment channel host accepts a version-1 completion (no account access) as well as a version-2 one, so an app can enroll an agent without sharing Ledger Sync account access. For an enrollment request, `AgentEnrollmentChannelCompletion` is now `AgentEnrollmentCompletion`: check `version === 2` before reading `accountAccess`. Hosts from earlier versions still refuse a version-1 completion.
+
 ## 0.3.0
 
 ### Minor Changes
