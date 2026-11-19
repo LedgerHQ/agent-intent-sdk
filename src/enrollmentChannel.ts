@@ -1,7 +1,7 @@
 import { hkdf } from "@noble/hashes/hkdf.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { AgentIntentSdkError, bytesToHex, concatBytes, hexToBytes } from "./bytes.ts";
-import { parseAgentEnrollmentCompletion, type AgentEnrollmentCompletionV2 } from "./completion.ts";
+import { parseAgentEnrollmentCompletion, type AgentEnrollmentCompletion } from "./completion.ts";
 import {
   AGENT_ENROLLMENT_CHANNEL_VERSION,
   agentEnrollmentSearch,
@@ -107,7 +107,7 @@ export type AgentEnrollmentChannelRequest = AgentEnrollmentRequestV2 | AgentReco
 /** Completion accepted by the host for a given channel request kind. */
 export type AgentEnrollmentChannelCompletion<
   Request extends AgentEnrollmentChannelRequest = AgentEnrollmentChannelRequest,
-> = Request extends AgentRecoveryRequest ? AgentRecoveryCompletion : AgentEnrollmentCompletionV2;
+> = Request extends AgentRecoveryRequest ? AgentRecoveryCompletion : AgentEnrollmentCompletion;
 
 export type AgentEnrollmentChannelHost = {
   binding: AgentEnrollmentChannelBinding;
@@ -1323,11 +1323,7 @@ function parseChannelCompletion(
       request.signature,
     );
   }
-  const completion = parseAgentEnrollmentCompletion(serialized, request.publicKey);
-  if (completion.version !== 2) {
-    throw channelError("The enrollment channel requires completion version 2.");
-  }
-  return completion;
+  return parseAgentEnrollmentCompletion(serialized, request.publicKey);
 }
 
 function resolveTimeouts(

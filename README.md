@@ -280,10 +280,13 @@ await host.waitForCompletion({
     // Prove this agent key belongs to the claimed Trustchains. Throw on failure.
   },
   persist: async (completion) => {
-    // Persist completion.trustchainId and completion.accountAccess atomically.
+    // Persist completion.trustchainId and, on version 2, completion.accountAccess atomically.
   },
 });
 ```
+
+The completion is version 1, without account access, or version 2, with
+`accountAccess`: check `version` before reading it.
 
 The browser validates the signed request, derives its trusted relay origin from
 the signed environment, and uses `createAgentEnrollmentChannelCandidate()` to
@@ -345,8 +348,8 @@ const completion = await host.waitForCompletion({ request, authenticate, persist
 
 For a recovery request, the host accepts only a version-3 recovery completion
 whose agent key, previous Trustchain, and request signature match the signed
-request, and whose `trustchainId` equals `previousTrustchainId`. For a version-2
-request it accepts only a version-2 completion. `serializeAgentRecoveryCompletion`,
+request, and whose `trustchainId` equals `previousTrustchainId`. For an enrollment
+request it accepts a version-1 or a version-2 completion. `serializeAgentRecoveryCompletion`,
 `parseAgentRecoveryCompletion`, and `validateAgentRecovery` are exported for the
 frontend. The channel binding is optional and signed; an unbound recovery
 request keeps its earlier canonical bytes.
