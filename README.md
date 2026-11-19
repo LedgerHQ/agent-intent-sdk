@@ -117,6 +117,7 @@ const approvable = canApproveSwapQuote(
     allowanceSpender: approval?.spender,
     allowanceToken: approval?.token,
     allowanceAmount: parseBaseUnits(tokenAllowanceData.approvedAmount),
+    approvalAmount: approval?.amount,
   },
   { network: "ethereum", swapsWithCalldata, soldTokenContract },
 );
@@ -139,7 +140,20 @@ The app can send the approval only when all of these hold:
 - for USDT, the allowance left is zero (`needsAllowanceReset` says when to reset it
   first).
 
-`parseErc20Approval` reads only exact `approve(address,uint256)` calldata.
+USDT's `approve` reverts while an allowance is left, so a USDT swap with an
+allowance left first resets it to 0. The Swap API's approval transaction is then
+that reset, `approve(spender, 0)`. `canResetSwapAllowance`, with the same
+arguments, says whether the app can send it: it applies the rules above except the
+last one, and needs `needsAllowanceReset` to hold and the approval's amount to be
+exactly 0. It checks only the transaction's `to` and `calldata`, so send those two
+with a value of 0 and let the wallet set the gas and fees; ignore the quote's
+`gasLimit` and `gasPrice`. It does not check that the reset's spender is the swap's
+router: a reset to 0 grants nothing, so a wrong spender only leaves the allowance in
+place, and the swap must still be checked against its router. Once the reset confirms,
+a new quote reports a zero allowance and asks for the usual approval.
+
+`parseErc20Approval` reads only exact `approve(address,uint256)` calldata, and
+returns its spender, its token and its amount.
 `parseBaseUnits` takes decimal digits or a safe integer only, so `"0x0"` is not a
 zero allowance.
 
