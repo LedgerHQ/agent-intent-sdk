@@ -5,7 +5,7 @@ const TOKENS_THAT_REVERT_CHANGING_A_NONZERO_ALLOWANCE: ReadonlySet<string> = new
   "0xdac17f958d2ee523a2206206994597c13d831ec7",
 ]);
 
-/** An ERC-20 `approve(spender, amount)` call: its spender and token, lowercase, and its amount. */
+/** Spender and token lowercase; amount in the token's base units. */
 export type Erc20Approval = { spender: string; token?: string; amount: bigint };
 
 export type SwapApprovalQuote = {
@@ -14,6 +14,7 @@ export type SwapApprovalQuote = {
   allowanceSpender?: string | undefined;
   allowanceToken?: string | undefined;
   allowanceAmount?: bigint | undefined;
+  /** The amount in the quote's approval transaction, not the allowance left (`allowanceAmount`). */
   approvalAmount?: bigint | undefined;
 };
 
@@ -78,12 +79,10 @@ export function canApproveSwapQuote<Quote extends SwapApprovalQuote>(
   return approvesTheSoldTokenForTheSwap(quote, context) && allowanceAcceptsApprove;
 }
 
-// With a USDT allowance left, the Swap API's approval transaction is the reset itself,
-// `approve(spender, 0)`, so the app sends it instead of building an approval.
-export function canResetSwapAllowance<Quote extends SwapApprovalQuote>(
-  quote: Quote,
+export function canResetSwapAllowance(
+  quote: SwapApprovalQuote,
   context: SwapApprovalContext,
-): quote is ApprovableSwapQuote<Quote> {
+): boolean {
   return (
     approvesTheSoldTokenForTheSwap(quote, context) &&
     needsAllowanceReset(quote) &&

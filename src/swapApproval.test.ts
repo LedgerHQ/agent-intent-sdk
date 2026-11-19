@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  type ApprovableSwapQuote,
   canApproveSwapQuote,
   canResetSwapAllowance,
   isSwapApprovalRequired,
@@ -220,6 +221,15 @@ describe("canResetSwapAllowance", () => {
     swapsWithCalldata: true,
     soldTokenContract: USDT,
   };
+
+  it("doesn't narrow a reset quote to an approvable one", () => {
+    const quote: SwapApprovalQuote = reset;
+    if (canResetSwapAllowance(quote, context)) {
+      // @ts-expect-error a reset quote must not reach code that builds approve(spender, amount).
+      const approvable: ApprovableSwapQuote<SwapApprovalQuote> = quote;
+      expect(approvable).toBe(reset);
+    }
+  });
 
   it("accepts the revoke a Swap API quote returns for a USDT allowance left", () => {
     // Velora quote for 1.5 USDT with 1 USDT left, Ethereum mainnet, 2026-11-17.

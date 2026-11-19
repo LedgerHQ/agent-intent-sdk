@@ -102,25 +102,26 @@ const deeplink = await client.createSwapIntent({
 ### Swap token approvals
 
 `canApproveSwapQuote` decides whether the Agent Intent app can send the ERC-20
-approval a Swap API quote needs, so that wallet-cli and the app can apply the same
+approval a Swap API quote needs, and `canResetSwapAllowance` whether it can first
+reset a USDT allowance left to 0, so that wallet-cli and the app apply the same
 rules:
 
 ```ts
 const approval = parseErc20Approval(tokenAllowanceData.approvalTransaction);
-const approvable = canApproveSwapQuote(
-  {
-    approvalRequired: isSwapApprovalRequired({
-      isApproved: tokenAllowanceData.isApproved,
-      isTokenApprovalRequired: tags.isTokenApprovalRequired,
-    }),
-    permitRequired,
-    allowanceSpender: approval?.spender,
-    allowanceToken: approval?.token,
-    allowanceAmount: parseBaseUnits(tokenAllowanceData.approvedAmount),
-    approvalAmount: approval?.amount,
-  },
-  { network: "ethereum", swapsWithCalldata, soldTokenContract },
-);
+const quote = {
+  approvalRequired: isSwapApprovalRequired({
+    isApproved: tokenAllowanceData.isApproved,
+    isTokenApprovalRequired: tags.isTokenApprovalRequired,
+  }),
+  permitRequired,
+  allowanceSpender: approval?.spender,
+  allowanceToken: approval?.token,
+  allowanceAmount: parseBaseUnits(tokenAllowanceData.approvedAmount),
+  approvalAmount: approval?.amount,
+};
+const context = { network: "ethereum", swapsWithCalldata, soldTokenContract };
+const approvable = canApproveSwapQuote(quote, context);
+const resettable = canResetSwapAllowance(quote, context);
 ```
 
 The caller computes three inputs:
@@ -137,20 +138,25 @@ The app can send the approval only when all of these hold:
 - its provider swaps with calldata;
 - the approval is an `approve` of the sold token, and its spender and token are
   addresses, the spender not the zero address;
-- for USDT, the allowance left is zero (`needsAllowanceReset` says when to reset it
-  first).
+- for USDT, the allowance left is zero (otherwise see `canResetSwapAllowance`).
 
-USDT's `approve` reverts while an allowance is left, so a USDT swap with an
-allowance left first resets it to 0. The Swap API's approval transaction is then
-that reset, `approve(spender, 0)`. `canResetSwapAllowance`, with the same
-arguments, says whether the app can send it: it applies the rules above except the
-last one, and needs `needsAllowanceReset` to hold and the approval's amount to be
-exactly 0. It checks only the transaction's `to` and `calldata`, so send those two
-with a value of 0 and let the wallet set the gas and fees; ignore the quote's
-`gasLimit` and `gasPrice`. It does not check that the reset's spender is the swap's
-router: a reset to 0 grants nothing, so a wrong spender only leaves the allowance in
-place, and the swap must still be checked against its router. Once the reset confirms,
-a new quote reports a zero allowance and asks for the usual approval.
+USDT's `approve` reverts while an allowance is left. With a USDT allowance left, the
+Velora quote observed so far carries the reset itself as its approval transaction,
+`approve(spender, 0)`; other providers are not verified yet, and a quote with any
+other approval stays refused. `canResetSwapAllowance` applies the same rules, with
+the USDT one replaced by: `needsAllowanceReset` holds and `approvalAmount` is
+exactly 0. To send the reset:
+
+- send only the transaction's `to` and `calldata`, with a value of 0; the wallet
+  sets the gas;
+- its spender is not checked against the swap's router: a reset to 0 grants
+  nothing, and the swap must still be checked against its router.
+
+Once the reset confirms, a new quote reports an allowance of 0 and asks for the
+usual approval.
+
+`canApproveSwapQuote` narrows the quote's type, so its `false` branch is `never`
+when your quote type declares `allowanceSpender` and `allowanceToken` as `string`.
 
 `parseErc20Approval` reads only exact `approve(address,uint256)` calldata, and
 returns its spender, its token and its amount.

@@ -2,6 +2,6 @@
 "@ledgerhq/agent-intent-sdk": minor
 ---
 
-Add `canResetSwapAllowance`, so the Agent Intent app can reset a USDT allowance left on Ethereum to 0 with the Swap API's own approval transaction before it approves the swap amount. With an allowance left, that transaction is `approve(spender, 0)`. `canResetSwapAllowance` accepts it only when `canApproveSwapQuote`'s rules on the network, the provider, the spender and the sold token hold, `needsAllowanceReset` is true, and the approved amount is exactly 0. `canApproveSwapQuote` still refuses such a quote.
+Add `canResetSwapAllowance`, which says whether the Agent Intent app can send a quote's `approve(spender, 0)` to reset a USDT allowance left before it approves the swap amount; `SwapApprovalQuote` takes the approval's amount as `approvalAmount`.
 
-`parseErc20Approval` now also returns the approved `amount`, and `SwapApprovalQuote` takes it as `approvalAmount`.
+`parseErc20Approval` now returns the approved `amount`, so `Erc20Approval` gains it as a required member: code that builds an `Erc20Approval` by hand, such as a test double, must add it. `amount` is a `bigint`, so `JSON.stringify` throws on a parsed approval; convert it first, for example with `amount.toString()`.
