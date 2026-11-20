@@ -214,10 +214,10 @@ console.log(formatAgentPublicKeyFingerprint(identity.publicKey));
 
 The helper accepts compressed or uncompressed secp256k1 public keys.
 
-## Validate an enrollment or recovery link
+## Validate an enrollment, recovery or ring access link
 
-`validateAgentEnrollment` and `validateAgentRecovery` take the link's query
-parameters. A malformed link comes back with `reason: "malformed"` and the
+`validateAgentEnrollment`, `validateAgentRecovery` and `validateAgentRingAccess`
+take the link's query parameters. A malformed link comes back with `reason: "malformed"` and the
 field problems in `issues`, so an application can say what went wrong:
 
 ```ts
@@ -356,15 +356,17 @@ request keeps its earlier canonical bytes.
 
 ### Rejection
 
-When the user rejects an enrollment or recovery request, the frontend tells the
-agent instead of leaving it to wait until the request expires:
+When the user rejects an enrollment, recovery or ring access request, the
+frontend tells the agent instead of leaving it to wait until the request
+expires:
 
 ```ts
 await candidate.reject(); // resolves after the host acknowledges the rejection
 ```
 
 On the host, `waitForCompletion` then rejects with
-`AgentEnrollmentRejectedError`, whose `kind` is `"enrollment"` or `"recovery"`.
+`AgentEnrollmentRejectedError`, whose `kind` is `"enrollment"`, `"recovery"` or
+`"ring-access"`.
 Nothing was authenticated or persisted. `isAgentEnrollmentRejectedError` checks
 for an `Error` with that `name` and a valid `kind` rather than using
 `instanceof`, so it also matches an error from another realm of the same process
@@ -485,6 +487,54 @@ completion that makes the host refuse rejections. The link already grants that
 much: it is what lets its holder reach the agent at all. The relay cannot forge
 a rejection, because it never holds the channel key.
 
+### Ring access
+
+A ring access request asks the user to add a key of the agent to their Key Ring
+(LKRP App 17), so that the agent can decrypt the ring secrets it is granted. Only
+an enrolled agent sends one: it is signed with the agent's App-18 key and carries
+the App-18 `trustchainId`, so the frontend can refuse a link that does not belong
+to the signed-in user before any device step. `encryptionPublicKey` is the
+compressed secp256k1 key to add to App 17. The channel binding is required:
+
+```ts
+const request = createAgentRingAccessRequest(identity, {
+  encryptionPublicKey,
+  name,
+  description,
+  source,
+  trustchainId,
+  expiresAt,
+  channel: host.binding,
+});
+console.log(createAgentRingAccessUrl(frontendUrl, request)); // <app>/agents/ring-access?v=4&...
+
+try {
+  const grant = await host.waitForCompletion({ request, authenticate, persist });
+  // grant: { version: 4, environment, trustchainId, applicationPath, ... }
+} catch (error) {
+  if (!isAgentEnrollmentRejectedError(error)) throw error;
+  // error.kind === "ring-access": the user declined.
+}
+```
+
+The frontend delivers a completion once the encryption key is a member at
+`applicationPath` (the App-17 stream `m/0'/17'/n'` or a section
+`m/0'/17'/n'/a'/g'`, see `isKeyRingApplicationPath`). The grant must name the
+request's own `trustchainId` and channel `environment`; any other Trustchain is
+refused, so a party holding the link cannot point the agent at a Key Ring of
+its own. Prove the membership with the encryption key in `authenticate` before
+persisting it. The host accepts only a version-4 completion whose agent key,
+encryption key and request signature match the signed request.
+`encryptionPublicKey` must be a compressed key other than the agent's App-18
+key. When the user declines, the frontend calls `reject()` as for an enrollment,
+and `waitForCompletion` rejects with an `AgentEnrollmentRejectedError` whose
+`kind` is `"ring-access"`. The rule against rejecting after a commit covers the
+App-17 step too: once the device may have added the encryption key, the frontend
+must never call `reject()` for that request, across page reloads included, and
+can only deliver the grant. `serializeAgentRingAccessCompletion`,
+`parseAgentRingAccessCompletion`, and `validateAgentRingAccess` are exported for
+the frontend.
+
 ### Security and timeouts
 
 The channel key and every encrypted envelope are bound to the exact signed
@@ -530,8 +580,9 @@ stops and fails the session when:
 Before each reopen the host also checks the signed request expiry against the
 wall clock, so it does not reconnect after a laptop slept past the expiry.
 
-The channel sends only the agent public key, App-18 Trustchain ID, and safe
-App-16 environment/root/path references. It must never carry a serialized
+The channel sends only the agent public key, App-18 Trustchain ID, safe
+App-16 environment/root/path references, and for ring access the encryption
+public key and App-17 environment/root/path references. It must never carry a serialized
 Trustchain, `walletSyncEncryptionKey`, private key, JWT, or access token.
 
 ## Development

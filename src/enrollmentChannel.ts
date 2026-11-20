@@ -21,6 +21,15 @@ import {
   type AgentRecoveryCompletion,
   type AgentRecoveryRequest,
 } from "./recovery.ts";
+import {
+  agentRingAccessSearch,
+  canonicalAgentRingAccessPayload,
+  isAgentRingAccessRequest,
+  parseAgentRingAccessCompletion,
+  validateAgentRingAccess,
+  type AgentRingAccessCompletion,
+  type AgentRingAccessRequest,
+} from "./ringAccess.ts";
 
 const PROTOCOL_VERSION = 1;
 const CHANNEL_DOMAIN = new TextEncoder().encode("agent-intent:enrollment-channel:v1");
@@ -102,12 +111,19 @@ export const AGENT_ENROLLMENT_CHANNEL_DEFAULT_TIMEOUTS = {
 } as const satisfies Required<AgentEnrollmentChannelTimeouts>;
 
 /** Signed requests whose completion can be delivered over the enrollment channel. */
-export type AgentEnrollmentChannelRequest = AgentEnrollmentRequestV2 | AgentRecoveryChannelRequest;
+export type AgentEnrollmentChannelRequest =
+  | AgentEnrollmentRequestV2
+  | AgentRecoveryChannelRequest
+  | AgentRingAccessRequest;
 
 /** Completion accepted by the host for a given channel request kind. */
 export type AgentEnrollmentChannelCompletion<
   Request extends AgentEnrollmentChannelRequest = AgentEnrollmentChannelRequest,
-> = Request extends AgentRecoveryRequest ? AgentRecoveryCompletion : AgentEnrollmentCompletion;
+> = Request extends AgentRingAccessRequest
+  ? AgentRingAccessCompletion
+  : Request extends AgentRecoveryRequest
+    ? AgentRecoveryCompletion
+    : AgentEnrollmentCompletion;
 
 export type AgentEnrollmentChannelHost = {
   binding: AgentEnrollmentChannelBinding;
@@ -148,12 +164,19 @@ export type AgentEnrollmentChannelCandidate = {
   close(): void;
 };
 
-/** The user rejected the signed enrollment or recovery request in the frontend. */
-export class AgentEnrollmentRejectedError extends AgentIntentSdkError {
-  readonly kind: "enrollment" | "recovery";
+export type AgentEnrollmentRejectionKind = "enrollment" | "recovery" | "ring-access";
 
-  constructor(kind: "enrollment" | "recovery") {
-    super(`The user rejected this agent ${kind} request.`);
+const REJECTED_REQUEST_NAMES = {
+  enrollment: "enrollment",
+  recovery: "recovery",
+  "ring-access": "ring access",
+} as const satisfies Record<AgentEnrollmentRejectionKind, string>;
+
+export class AgentEnrollmentRejectedError extends AgentIntentSdkError {
+  readonly kind: AgentEnrollmentRejectionKind;
+
+  constructor(kind: AgentEnrollmentRejectionKind) {
+    super(`The user rejected this agent ${REJECTED_REQUEST_NAMES[kind]} request.`);
     this.name = "AgentEnrollmentRejectedError";
     this.kind = kind;
   }
@@ -180,7 +203,8 @@ export function isAgentEnrollmentRejectedError(
   const { name, kind, message } = error as { name?: unknown; kind?: unknown; message?: unknown };
   return (
     name === "AgentEnrollmentRejectedError" &&
-    (kind === "enrollment" || kind === "recovery") &&
+    typeof kind === "string" &&
+    Object.hasOwn(REJECTED_REQUEST_NAMES, kind) &&
     typeof message === "string"
   );
 }
@@ -505,12 +529,7 @@ function runHost(
       socket = source;
       loseSocket = onLost;
     };
-    const failAsRejected = () =>
-      fail(
-        new AgentEnrollmentRejectedError(
-          isAgentRecoveryRequest(request) ? "recovery" : "enrollment",
-        ),
-      );
+    const failAsRejected = () => fail(new AgentEnrollmentRejectedError(rejectionKind(request)));
     const recordShareCredential = (body: ShareCredential) => {
       if (body.kind === "completion") completionReceived = true;
       else if (!completionReceived) failAsRejected();
@@ -1214,9 +1233,7 @@ function completionDigest(payload: string): string {
 function signedRequestDigest(request: AgentEnrollmentChannelRequest): Uint8Array {
   return sha256(
     concatBytes(
-      isAgentRecoveryRequest(request)
-        ? canonicalAgentRecoveryPayload(request)
-        : canonicalAgentEnrollmentPayload(request),
+      canonicalChannelRequestPayload(request),
       new Uint8Array([0]),
       hexToBytes(request.signature),
     ),
@@ -1291,17 +1308,32 @@ function assertHostRequest(
   }
 }
 
+function canonicalChannelRequestPayload(request: AgentEnrollmentChannelRequest): Uint8Array {
+  if (isAgentRingAccessRequest(request)) return canonicalAgentRingAccessPayload(request);
+  if (isAgentRecoveryRequest(request)) return canonicalAgentRecoveryPayload(request);
+  return canonicalAgentEnrollmentPayload(request);
+}
+
+function validateChannelRequest(request: AgentEnrollmentChannelRequest, now: Date) {
+  if (isAgentRingAccessRequest(request)) {
+    return validateAgentRingAccess(agentRingAccessSearch(request), now);
+  }
+  if (isAgentRecoveryRequest(request)) {
+    return validateAgentRecovery(agentRecoverySearch(request), now);
+  }
+  return validateAgentEnrollment(agentEnrollmentSearch(request), now);
+}
+
 function assertCandidateRequest(request: AgentEnrollmentChannelRequest, now: Date): void {
-  const recovery = isAgentRecoveryRequest(request);
   if (
-    (!recovery && request.version !== AGENT_ENROLLMENT_CHANNEL_VERSION) ||
-    (request as { channel?: unknown }).channel === undefined
+    (request as { channel?: unknown }).channel === undefined ||
+    (!isAgentRingAccessRequest(request) &&
+      !isAgentRecoveryRequest(request) &&
+      request.version !== AGENT_ENROLLMENT_CHANNEL_VERSION)
   ) {
     throw channelError("Automatic completion requires an enrollment channel request.");
   }
-  const validation = recovery
-    ? validateAgentRecovery(agentRecoverySearch(request), now)
-    : validateAgentEnrollment(agentEnrollmentSearch(request), now);
+  const validation = validateChannelRequest(request, now);
   if (validation.status === "invalid") {
     throw channelError(
       validation.reason === "expired"
@@ -1311,10 +1343,19 @@ function assertCandidateRequest(request: AgentEnrollmentChannelRequest, now: Dat
   }
 }
 
+function rejectionKind(request: AgentEnrollmentChannelRequest): AgentEnrollmentRejectionKind {
+  if (isAgentRingAccessRequest(request)) return "ring-access";
+  if (isAgentRecoveryRequest(request)) return "recovery";
+  return "enrollment";
+}
+
 function parseChannelCompletion(
   serialized: string,
   request: AgentEnrollmentChannelRequest,
 ): AgentEnrollmentChannelCompletion {
+  if (isAgentRingAccessRequest(request)) {
+    return parseAgentRingAccessCompletion(serialized, request);
+  }
   if (isAgentRecoveryRequest(request)) {
     return parseAgentRecoveryCompletion(
       serialized,

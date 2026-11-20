@@ -1,5 +1,4 @@
-import { secp256k1 } from "@noble/curves/secp256k1.js";
-import { AgentIntentSdkError, bytesToHex, hexToBytes } from "./bytes.ts";
+import { AgentIntentSdkError, bytesToHex } from "./bytes.ts";
 import {
   isAgentSource,
   SUPPORTED_AGENT_SOURCES,
@@ -13,8 +12,10 @@ import {
   checkRecoveryLink,
   malformedLink,
   malformedLinkMessage,
+  verifyAgentLinkSignature,
   type AgentLinkIssue,
 } from "./requestFields.ts";
+import type { AgentRingAccessRequest } from "./ringAccess.ts";
 
 export const AGENT_RECOVERY_VERSION = "3";
 export const AGENT_RECOVERY_COMPLETION_VERSION = 3;
@@ -82,7 +83,7 @@ export function isAgentRecoverySource(value: unknown): value is AgentRecoverySou
 }
 
 export function isAgentRecoveryRequest(
-  request: AgentEnrollmentRequest | AgentRecoveryRequest,
+  request: AgentEnrollmentRequest | AgentRecoveryRequest | AgentRingAccessRequest,
 ): request is AgentRecoveryRequest {
   return request.version === AGENT_RECOVERY_VERSION;
 }
@@ -198,25 +199,12 @@ export function validateAgentRecovery(
   if (expiration <= now.getTime()) {
     return invalid("expired", "This agent recovery link has expired.");
   }
-  try {
-    const verified = secp256k1.verify(
-      hexToBytes(request.signature),
-      canonicalAgentRecoveryPayload(request),
-      hexToBytes(request.publicKey),
-      { prehash: true, lowS: false, format: "compact" },
-    );
-    return verified
-      ? { status: "valid", request }
-      : invalid(
-          "invalid-signature",
-          "This agent recovery link has been changed or is not authentic.",
-        );
-  } catch {
-    return invalid(
-      "invalid-signature",
-      "This agent recovery link has been changed or is not authentic.",
-    );
-  }
+  return verifyAgentLinkSignature(request, () => canonicalAgentRecoveryPayload(request))
+    ? { status: "valid", request }
+    : invalid(
+        "invalid-signature",
+        "This agent recovery link has been changed or is not authentic.",
+      );
 }
 
 export function serializeAgentRecoveryCompletion(

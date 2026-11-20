@@ -1,10 +1,10 @@
-import { secp256k1 } from "@noble/curves/secp256k1.js";
-import { AgentIntentSdkError, bytesToHex, hexToBytes } from "./bytes.ts";
+import { AgentIntentSdkError, bytesToHex } from "./bytes.ts";
 import { SIGNATURE_COMPACT, sha256Digest, type AgentIdentity } from "./identity.ts";
 import {
   checkEnrollmentLink,
   malformedLink,
   malformedLinkMessage,
+  verifyAgentLinkSignature,
   type AgentLinkIssue,
   type MalformedAgentLink,
 } from "./requestFields.ts";
@@ -195,22 +195,9 @@ export function validateAgentEnrollment(
   const request: AgentEnrollmentRequest = channel
     ? { version: AGENT_ENROLLMENT_CHANNEL_VERSION, ...common, channel }
     : { version: AGENT_ENROLLMENT_VERSION, ...common };
-  try {
-    const verified = secp256k1.verify(
-      hexToBytes(request.signature),
-      canonicalAgentEnrollmentPayload(request),
-      hexToBytes(request.publicKey),
-      { prehash: true, lowS: false, format: "compact" },
-    );
-    return verified
-      ? { status: "valid", request }
-      : invalid("invalid-signature", "This enrollment link has been changed or is not authentic.");
-  } catch {
-    return invalid(
-      "invalid-signature",
-      "This enrollment link has been changed or is not authentic.",
-    );
-  }
+  return verifyAgentLinkSignature(request, () => canonicalAgentEnrollmentPayload(request))
+    ? { status: "valid", request }
+    : invalid("invalid-signature", "This enrollment link has been changed or is not authentic.");
 }
 
 function assertEnrollmentFields(request: UnsignedAgentEnrollmentRequest): void {
