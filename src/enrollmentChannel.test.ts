@@ -444,6 +444,78 @@ describe("encrypted enrollment channel", () => {
     expect(relay.sockets[0]?.closed).toBe(true);
   });
 
+  it("keeps the host waiting until a deadline beyond the setTimeout maximum", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2098-01-01T00:00:00.000Z"));
+    const relay = new TestRelay();
+    const agent = createSoftwareAgentIdentity();
+    // wallet-cli passes `--expires-in` (up to 30d) as both host waits.
+    const thirtyDaysMs = 30 * 24 * 60 * 60_000;
+    const host = createAgentEnrollmentChannelHost({
+      environment: "production",
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+      timeouts: { candidateTimeoutMs: thirtyDaysMs, completionTimeoutMs: thirtyDaysMs },
+    });
+    const request = createAgentEnrollmentRequest(agent, {
+      name: "Portfolio Bot",
+      description: "Proposes portfolio operations.",
+      source: "openclaw",
+      expiresAt: new Date(Date.now() + thirtyDaysMs).toISOString(),
+      channel: host.binding,
+    });
+    if (request.version !== "2") throw new Error("expected channel request");
+    let settled = false;
+    const waiting = host.waitForCompletion({
+      request,
+      authenticate: async () => undefined,
+      persist: async () => undefined,
+    });
+    waiting.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    const result = expect(waiting).rejects.toThrow(/timed out/);
+
+    await vi.advanceTimersByTimeAsync(thirtyDaysMs - 1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await result;
+  });
+
+  it("stops a re-armed deadline timer when the host closes", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2098-01-01T00:00:00.000Z"));
+    const relay = new TestRelay();
+    const agent = createSoftwareAgentIdentity();
+    const thirtyDaysMs = 30 * 24 * 60 * 60_000;
+    const host = createAgentEnrollmentChannelHost({
+      environment: "production",
+      relayBaseUrl: RELAY_URL,
+      webSocketFactory: relay.factory,
+      timeouts: { candidateTimeoutMs: thirtyDaysMs, completionTimeoutMs: thirtyDaysMs },
+    });
+    const request = createAgentEnrollmentRequest(agent, {
+      name: "Portfolio Bot",
+      description: "Proposes portfolio operations.",
+      source: "openclaw",
+      expiresAt: new Date(Date.now() + thirtyDaysMs).toISOString(),
+      channel: host.binding,
+    });
+    if (request.version !== "2") throw new Error("expected channel request");
+    const waiting = host.waitForCompletion({
+      request,
+      authenticate: async () => undefined,
+      persist: async () => undefined,
+    });
+    const result = expect(waiting).rejects.toThrow(/has been closed/);
+
+    await vi.advanceTimersByTimeAsync(2 ** 31);
+    host.close();
+    await result;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("persists only once when an encrypted completion is replayed", async () => {
     const relay = new TestRelay(undefined, "TrustchainShareCredential");
     const agent = createSoftwareAgentIdentity();
