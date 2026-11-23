@@ -142,10 +142,14 @@ The app can send the approval only when all of these hold:
 
 USDT's `approve` reverts while an allowance is left. With a USDT allowance left, the
 Velora quote observed so far carries the reset itself as its approval transaction,
-`approve(spender, 0)`; other providers are not verified yet, and a quote with any
-other approval stays refused. `canResetSwapAllowance` applies the same rules, with
-the USDT one replaced by: `needsAllowanceReset` holds and `approvalAmount` is
-exactly 0. To send the reset:
+`approve(spender, 0)`; other providers are not verified yet.
+
+`canResetSwapAllowance` applies the rules above, with the USDT one replaced by:
+
+- `needsAllowanceReset` holds;
+- `approvalAmount` is exactly 0, so a quote with any other approval stays refused.
+
+To send the reset:
 
 - send the same `approvalTransaction` you parsed `approvalAmount` from, only its
   `to` and `calldata`, with a value of 0; the wallet sets the gas;
@@ -156,7 +160,9 @@ Once the reset confirms, a new quote reports an allowance of 0 and asks for the
 usual approval.
 
 `canApproveSwapQuote` narrows the quote's type, so its `false` branch is `never`
-when your quote type declares `allowanceSpender` and `allowanceToken` as `string`.
+when your quote type declares `allowanceSpender` and `allowanceToken` as `string`:
+call `canResetSwapAllowance` first, or keep both results as booleans, as the
+snippet above does.
 
 `parseErc20Approval` reads only exact `approve(address,uint256)` calldata, and
 returns its spender, its token and its amount.
