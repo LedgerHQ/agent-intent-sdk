@@ -147,8 +147,8 @@ other approval stays refused. `canResetSwapAllowance` applies the same rules, wi
 the USDT one replaced by: `needsAllowanceReset` holds and `approvalAmount` is
 exactly 0. To send the reset:
 
-- send only the transaction's `to` and `calldata`, with a value of 0; the wallet
-  sets the gas;
+- send the same `approvalTransaction` you parsed `approvalAmount` from, only its
+  `to` and `calldata`, with a value of 0; the wallet sets the gas;
 - its spender is not checked against the swap's router: a reset to 0 grants
   nothing, and the swap must still be checked against its router.
 
