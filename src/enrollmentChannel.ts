@@ -900,6 +900,7 @@ function openCandidateSession(
             payload,
           );
           if (state !== next) return;
+          stopPhaseTimer();
           stopPhaseTimer = deadlineTimer(timeouts.acknowledgementTimeoutMs, request.expiresAt, () =>
             fail(channelError(timeoutMessage)),
           );
@@ -1338,7 +1339,7 @@ function resolveTimeouts(
   return resolved;
 }
 
-// Node and Bun fire a longer setTimeout after 1 ms instead.
+// Delays above 2^31 - 1 ms overflow and fire almost immediately.
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
 function deadlineTimer(timeoutMs: number, expiresAt: string, onTimeout: () => void): () => void {
