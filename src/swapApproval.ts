@@ -1,12 +1,12 @@
-const ERC20_APPROVE_CALLDATA = /^0x095ea7b30{24}([0-9a-f]{40})[0-9a-f]{64}$/;
+const ERC20_APPROVE_CALLDATA = /^0x095ea7b30{24}([0-9a-f]{40})([0-9a-f]{64})$/;
 const EVM_ADDRESS = /^0x[0-9a-f]{40}$/;
 const ZERO_ADDRESS = `0x${"0".repeat(40)}`;
 const TOKENS_THAT_REVERT_CHANGING_A_NONZERO_ALLOWANCE: ReadonlySet<string> = new Set([
   "0xdac17f958d2ee523a2206206994597c13d831ec7",
 ]);
 
-/** The spender and token of an ERC-20 `approve(spender, amount)` call, lowercase. */
-export type Erc20Approval = { spender: string; token?: string };
+/** Spender and token lowercase; amount in the token's base units. */
+export type Erc20Approval = { spender: string; token?: string; amount: bigint };
 
 export type SwapApprovalQuote = {
   approvalRequired: boolean;
@@ -14,6 +14,8 @@ export type SwapApprovalQuote = {
   allowanceSpender?: string | undefined;
   allowanceToken?: string | undefined;
   allowanceAmount?: bigint | undefined;
+  /** The amount in the quote's approval transaction, not the allowance left (`allowanceAmount`). */
+  approvalAmount?: bigint | undefined;
 };
 
 export type ApprovableSwapQuote<Quote extends SwapApprovalQuote> = Quote & {
@@ -31,13 +33,15 @@ export function parseErc20Approval(transaction: unknown): Erc20Approval | undefi
   if (typeof transaction !== "object" || transaction === null) return undefined;
   const { to, calldata } = transaction as { to?: unknown; calldata?: unknown };
   if (typeof calldata !== "string") return undefined;
-  const spender = ERC20_APPROVE_CALLDATA.exec(calldata.toLowerCase())?.[1];
-  if (spender === undefined) return undefined;
+  const match = ERC20_APPROVE_CALLDATA.exec(calldata.toLowerCase());
+  if (match === null) return undefined;
+  const [, spender, amount] = match;
 
   const token = typeof to === "string" ? to.toLowerCase() : "";
   return {
     spender: `0x${spender}`,
     ...(EVM_ADDRESS.test(token) ? { token } : {}),
+    amount: BigInt(`0x${amount}`),
   };
 }
 
@@ -68,14 +72,32 @@ export function needsAllowanceReset(
 
 export function canApproveSwapQuote<Quote extends SwapApprovalQuote>(
   quote: Quote,
-  { network, swapsWithCalldata, soldTokenContract }: SwapApprovalContext,
+  context: SwapApprovalContext,
 ): quote is ApprovableSwapQuote<Quote> {
+  const allowanceAcceptsApprove =
+    !revertsUnlessAllowanceIsZero(quote) || quote.allowanceAmount === 0n;
+  return approvesTheSoldTokenForTheSwap(quote, context) && allowanceAcceptsApprove;
+}
+
+export function canResetSwapAllowance(
+  quote: SwapApprovalQuote,
+  context: SwapApprovalContext,
+): boolean {
+  return (
+    approvesTheSoldTokenForTheSwap(quote, context) &&
+    needsAllowanceReset(quote) &&
+    quote.approvalAmount === 0n
+  );
+}
+
+function approvesTheSoldTokenForTheSwap(
+  quote: SwapApprovalQuote,
+  { network, swapsWithCalldata, soldTokenContract }: SwapApprovalContext,
+): quote is ApprovableSwapQuote<SwapApprovalQuote> {
   const approvesTheSoldToken =
     soldTokenContract !== undefined &&
     isEvmAddress(quote.allowanceToken) &&
     quote.allowanceToken.toLowerCase() === soldTokenContract.toLowerCase();
-  const allowanceAcceptsApprove =
-    !revertsUnlessAllowanceIsZero(quote) || quote.allowanceAmount === 0n;
   return (
     network === "ethereum" &&
     quote.approvalRequired &&
@@ -83,8 +105,7 @@ export function canApproveSwapQuote<Quote extends SwapApprovalQuote>(
     swapsWithCalldata &&
     isEvmAddress(quote.allowanceSpender) &&
     quote.allowanceSpender.toLowerCase() !== ZERO_ADDRESS &&
-    approvesTheSoldToken &&
-    allowanceAcceptsApprove
+    approvesTheSoldToken
   );
 }
 
