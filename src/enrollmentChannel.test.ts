@@ -6,12 +6,15 @@ import {
   canonicalAgentEnrollmentPayload,
   createAgentEnrollmentRequest,
   validateAgentEnrollment,
+  type AgentEnrollmentChannelBinding,
 } from "./enrollment.ts";
 import {
   AGENT_ENROLLMENT_CHANNEL_DEFAULT_TIMEOUTS,
   createAgentEnrollmentChannelCandidate,
   createAgentEnrollmentChannelHost,
   enrollmentChannelCryptoVectors,
+  isAgentEnrollmentRejectedError,
+  type AgentEnrollmentChannelRequest,
 } from "./enrollmentChannel.ts";
 import { createSoftwareAgentIdentity } from "./identity.ts";
 import * as packageExports from "./index.ts";
@@ -23,8 +26,10 @@ import {
   recoveryChannelRequest,
   completionFor,
   shortTimeouts,
+  reconnectTimeouts,
   TestRelay,
   waitingHost,
+  withoutAcknowledgements,
 } from "./enrollmentChannel.test-support.ts";
 
 describe("encrypted enrollment channel", () => {
@@ -444,76 +449,60 @@ describe("encrypted enrollment channel", () => {
     expect(relay.sockets[0]?.closed).toBe(true);
   });
 
-  it("keeps the host waiting until a deadline beyond the setTimeout maximum", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2098-01-01T00:00:00.000Z"));
-    const relay = new TestRelay();
-    const agent = createSoftwareAgentIdentity();
-    // wallet-cli passes `--expires-in` (up to 30d) as both host waits.
-    const thirtyDaysMs = 30 * 24 * 60 * 60_000;
-    const host = createAgentEnrollmentChannelHost({
-      environment: "production",
-      relayBaseUrl: RELAY_URL,
-      webSocketFactory: relay.factory,
-      timeouts: { candidateTimeoutMs: thirtyDaysMs, completionTimeoutMs: thirtyDaysMs },
-    });
-    const request = createAgentEnrollmentRequest(agent, {
-      name: "Portfolio Bot",
-      description: "Proposes portfolio operations.",
-      source: "openclaw",
-      expiresAt: new Date(Date.now() + thirtyDaysMs).toISOString(),
-      channel: host.binding,
-    });
-    if (request.version !== "2") throw new Error("expected channel request");
-    let settled = false;
-    const waiting = host.waitForCompletion({
-      request,
-      authenticate: async () => undefined,
-      persist: async () => undefined,
-    });
-    waiting.then(
-      () => (settled = true),
-      () => (settled = true),
-    );
+  it.each([
+    { kind: "enrollment", makeRequest: expiringEnrollmentRequest },
+    { kind: "recovery", makeRequest: recoveryChannelRequest },
+  ])("keeps the $kind host waiting beyond the setTimeout maximum", async ({ makeRequest }) => {
+    const { waiting, isSettled } = startLongDeadlineHost(makeRequest);
     const result = expect(waiting).rejects.toThrow(/timed out/);
 
-    await vi.advanceTimersByTimeAsync(thirtyDaysMs - 1);
-    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(THIRTY_DAYS_MS - 1);
+    expect(isSettled()).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
     await result;
   });
 
   it("stops a re-armed deadline timer when the host closes", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2098-01-01T00:00:00.000Z"));
-    const relay = new TestRelay();
-    const agent = createSoftwareAgentIdentity();
-    const thirtyDaysMs = 30 * 24 * 60 * 60_000;
-    const host = createAgentEnrollmentChannelHost({
-      environment: "production",
-      relayBaseUrl: RELAY_URL,
-      webSocketFactory: relay.factory,
-      timeouts: { candidateTimeoutMs: thirtyDaysMs, completionTimeoutMs: thirtyDaysMs },
-    });
-    const request = createAgentEnrollmentRequest(agent, {
-      name: "Portfolio Bot",
-      description: "Proposes portfolio operations.",
-      source: "openclaw",
-      expiresAt: new Date(Date.now() + thirtyDaysMs).toISOString(),
-      channel: host.binding,
-    });
-    if (request.version !== "2") throw new Error("expected channel request");
-    const waiting = host.waitForCompletion({
-      request,
-      authenticate: async () => undefined,
-      persist: async () => undefined,
-    });
+    const { host, waiting } = startLongDeadlineHost(expiringEnrollmentRequest);
     const result = expect(waiting).rejects.toThrow(/has been closed/);
 
     await vi.advanceTimersByTimeAsync(2 ** 31);
     host.close();
     await result;
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    {
+      timer: "acknowledgement",
+      timeouts: {
+        acknowledgementTimeoutMs: THIRTY_DAYS_MS,
+        completionTimeoutMs: 2 * THIRTY_DAYS_MS,
+      },
+      message: "Enrollment rejection acknowledgement timed out.",
+    },
+    {
+      timer: "session",
+      timeouts: {
+        acknowledgementTimeoutMs: 2 * THIRTY_DAYS_MS,
+        completionTimeoutMs: THIRTY_DAYS_MS,
+      },
+      message: "Enrollment rejection timed out.",
+    },
+  ])("keeps a candidate on its $timer timer beyond the setTimeout maximum", async (row) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2098-01-01T00:00:00.000Z"));
+    const setup = waitingHost(channelRequest, withoutAcknowledgements);
+    const candidate = setup.candidate({ timeouts: { ...reconnectTimeouts(), ...row.timeouts } });
+    await candidate.connect();
+
+    const rejecting = expect(candidate.reject()).rejects.toThrow(row.message);
+    // The acknowledgement timer starts once the host has the rejection.
+    await expect(setup.waiting).rejects.toSatisfy(isAgentEnrollmentRejectedError);
+    await vi.advanceTimersByTimeAsync(THIRTY_DAYS_MS - 1);
+    expect(setup.relay.sockets[1]?.closed).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await rejecting;
   });
 
   it("persists only once when an encrypted completion is replayed", async () => {
@@ -1172,3 +1161,48 @@ describe("encrypted enrollment channel", () => {
     expect(relay.sockets[0]?.closed).toBe(true);
   });
 });
+
+// wallet-cli passes `--expires-in` (up to 30d) as both host waits.
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60_000;
+
+function expiringEnrollmentRequest(
+  agent: ReturnType<typeof createSoftwareAgentIdentity>,
+  channel: AgentEnrollmentChannelBinding,
+): AgentEnrollmentChannelRequest {
+  const request = createAgentEnrollmentRequest(agent, {
+    name: "Portfolio Bot",
+    description: "Proposes portfolio operations.",
+    source: "openclaw",
+    expiresAt: new Date(Date.now() + THIRTY_DAYS_MS).toISOString(),
+    channel,
+  });
+  if (request.version !== "2") throw new Error("expected channel request");
+  return request;
+}
+
+function startLongDeadlineHost(
+  makeRequest: (
+    agent: ReturnType<typeof createSoftwareAgentIdentity>,
+    channel: AgentEnrollmentChannelBinding,
+  ) => AgentEnrollmentChannelRequest,
+) {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2098-01-01T00:00:00.000Z"));
+  const host = createAgentEnrollmentChannelHost({
+    environment: "production",
+    relayBaseUrl: RELAY_URL,
+    webSocketFactory: new TestRelay().factory,
+    timeouts: { candidateTimeoutMs: THIRTY_DAYS_MS, completionTimeoutMs: THIRTY_DAYS_MS },
+  });
+  const waiting = host.waitForCompletion({
+    request: makeRequest(createSoftwareAgentIdentity(), host.binding),
+    authenticate: async () => undefined,
+    persist: async () => undefined,
+  });
+  let settled = false;
+  waiting.then(
+    () => (settled = true),
+    () => (settled = true),
+  );
+  return { host, waiting, isSettled: () => settled };
+}
