@@ -1,5 +1,19 @@
 # @ledgerhq/agent-intent-sdk
 
+## 0.4.0
+
+### Minor Changes
+
+- [#59](https://github.com/LedgerHQ/agent-intent-sdk/pull/59) [`87037c0`](https://github.com/LedgerHQ/agent-intent-sdk/commit/87037c0439eea6e9da74c69a1a31e2b1a545204f) Thanks [@michalmisiejuk-ext-collab](https://github.com/michalmisiejuk-ext-collab)! - The enrollment channel host accepts a version-1 completion (no account access) as well as a version-2 one, so an app can enroll an agent without sharing Ledger Sync account access. For an enrollment request, `AgentEnrollmentChannelCompletion` is now `AgentEnrollmentCompletion`: check `version === 2` before reading `accountAccess`. Hosts from earlier versions still refuse a version-1 completion.
+
+- [#60](https://github.com/LedgerHQ/agent-intent-sdk/pull/60) [`22bb560`](https://github.com/LedgerHQ/agent-intent-sdk/commit/22bb560ae384b665b42e536acd3b0657af0f9218) Thanks [@mateuszmarcinkowski-ext-afk](https://github.com/mateuszmarcinkowski-ext-afk)! - Add `canResetSwapAllowance`, which says whether the Agent Intent app can send a quote's `approve(spender, 0)` to reset a USDT allowance left before it approves the swap amount; `SwapApprovalQuote` takes the approval's amount as `approvalAmount`.
+
+  `parseErc20Approval` now returns the approved `amount`, so `Erc20Approval` gains it as a required member: code that builds an `Erc20Approval` by hand, such as a test double, must add it. `amount` is a `bigint`, so `JSON.stringify` throws on a parsed approval; convert it first, for example with `amount.toString()`.
+
+### Patch Changes
+
+- [#67](https://github.com/LedgerHQ/agent-intent-sdk/pull/67) [`6c40f27`](https://github.com/LedgerHQ/agent-intent-sdk/commit/6c40f27635e0c54ae0903218d3cbac929cfac267) Thanks [@mateuszmarcinkowski-ext-afk](https://github.com/mateuszmarcinkowski-ext-afk)! - The enrollment channel keeps waiting for timeouts and request expiries beyond about 24.8 days instead of timing out at once.
+
 ## 0.3.0
 
 ### Minor Changes
