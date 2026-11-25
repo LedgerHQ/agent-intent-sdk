@@ -22,6 +22,7 @@ export * from "./identity.ts";
 export * from "./intentPage.ts";
 export * from "./intents.ts";
 export * from "./recovery.ts";
+export * from "./reviewerClient.ts";
 export {
   AGENT_DESCRIPTION_MAX_LENGTH,
   AGENT_NAME_MAX_LENGTH,

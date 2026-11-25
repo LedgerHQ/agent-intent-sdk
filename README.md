@@ -6,7 +6,8 @@
 > while the Agent Intent protocol and service contract stabilize.
 
 Headless TypeScript SDK for agents that enroll with Ledger Agent Intent,
-authenticate through LKRP/Keycloak, and submit signed intents for human approval.
+authenticate through LKRP/Keycloak, and submit signed intents for human approval,
+and for the user's app that reviews those intents.
 
 The package has no React, Vite, browser-storage, Ledger device, or application
 state dependency. Secret-key persistence is deliberately left to consumers.
@@ -20,7 +21,7 @@ pnpm add @ledgerhq/agent-intent-sdk
 ## Requirements
 
 - Node.js 24 or newer
-- An enrolled Agent Intent identity and Trustchain ID
+- For the agent client: an enrolled Agent Intent identity and Trustchain ID
 - Network access to the selected Agent Intent and Keycloak environments
 
 ## Submit an intent
@@ -223,10 +224,49 @@ signed, fails with `AgentIntentHttpError` `status` 400 and no `type`; call
 `getIntent` to see which. Only the user rejects, in Ledger's interface. An intent
 can't be edited: to change one, cancel it and create a new one.
 
+## Review intents in the user's app
+
+The user's app (the Agent Intent web app, Ledger Wallet) reads, signs and
+rejects intents with the reviewer client. It authenticates as the user's
+App-18 member, so it takes a token provider instead of an agent identity:
+
+```ts
+import { createAgentIntentReviewerClient, isStaleRevisionError } from "@ledgerhq/agent-intent-sdk";
+
+const reviewer = createAgentIntentReviewerClient({
+  bffBaseUrl: "https://global.api.stg.ledger-test.com/agent-intent",
+  tokenProvider, // withAccessToken() with the user's App-18 bearer token
+});
+
+const { intents } = await reviewer.listIntents({ status: ["created", "crafted"], agentPubkey });
+
+async function approve(intentId: string, retried = false): Promise<string> {
+  // A swap passes its Swap API parameters as the second argument.
+  const { rawTransaction, revision } = await reviewer.craftIntent(intentId);
+  const signature = await signOnDevice(rawTransaction);
+  try {
+    return (await reviewer.submitSignature(intentId, { signature, revision })).transactionId;
+  } catch (error) {
+    // Crafted again since: sign the new bytes, once.
+    if (isStaleRevisionError(error) && !retried) return approve(intentId, true);
+    throw error;
+  }
+}
+```
+
+The listing covers every agent in the user's Trustchain; `agentPubkey` keeps one.
+Filters, cursors and parsing work as in the agent's listing. `getAgentProfile`
+resolves `undefined` on the BFF's 404, which it also answers for a key outside
+the user's Trustchain. Responses are checked at runtime and their shapes are
+exported as types, so an app that validates with its own schemas can type them
+against these. Failed calls throw `AgentIntentHttpError` with the BFF's `status`,
+and its `type` when it sends one: one of `AGENT_INTENT_ERROR_TYPES` or a newer one.
+
 ## User-Agent
 
-Outside browsers, requests send `User-Agent: ledger-agent-intent-sdk/<version> (agentic)`.
+Outside browsers, the agent client's requests send `User-Agent: ledger-agent-intent-sdk/<version> (agentic)`.
 A custom `tokenProvider` sends its own authentication requests, so it must set that header itself.
+The reviewer client doesn't set one: it runs in the user's app, not in an agent.
 
 ## Enrollment fingerprint
 

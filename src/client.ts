@@ -5,12 +5,11 @@ import {
   type AgentIntentEnvironment,
   type AgentKeycloakConfig,
 } from "./auth.ts";
+import { httpError, intentListUrl, intentUrl, withTrailingSlash } from "./bffHttp.ts";
 import { AgentIntentSdkError } from "./bytes.ts";
 import type { AgentIdentity } from "./identity.ts";
 import { withAgentUserAgent } from "./userAgent.ts";
 import {
-  isAgentIntentPageSize,
-  isAgentIntentStatus,
   parseAgentIntentPage,
   parseAgentIntentRecord,
   type AgentIntentPage,
@@ -27,6 +26,8 @@ import {
   type SwapIntent,
 } from "./intents.ts";
 
+export { AgentIntentHttpError } from "./bffHttp.ts";
+
 export const AGENT_INTENT_FRONTEND_URLS: Record<AgentIntentEnvironment, string> = {
   staging: "https://app.agents.ledger-test.com/",
   production: "https://app.agents.ledger.com/",
@@ -41,18 +42,6 @@ function promptAppUrl(appUrl: string): string {
   if (url.protocol === "https:") return url.host;
   if (url.protocol === "http:") return url.origin;
   throw new AgentIntentSdkError(`The Agent Intent app URL must be http(s), got "${appUrl}".`);
-}
-
-export class AgentIntentHttpError extends AgentIntentSdkError {
-  readonly status: number;
-  readonly type: string | undefined;
-
-  constructor(message: string, status: number, type?: string) {
-    super(message);
-    this.name = "AgentIntentHttpError";
-    this.status = status;
-    this.type = type;
-  }
 }
 
 export type AgentIntentClient = {
@@ -125,22 +114,9 @@ export function createAgentIntentClient(input: {
       submitIntent(JSON.stringify(signSwapIntent(input.identity, intent))),
     createSignedSwapIntent: (intent, nonce) => signSwapIntent(input.identity, intent, nonce),
     listIntents: async (query = {}) => {
-      const url = new URL(endpoint);
-      // An empty cursor means "no next page", like an empty `X-Ledger-Next`.
-      if (query.cursor) {
-        url.searchParams.set("cursor", query.cursor);
-      } else {
-        // The types already restrict these; JavaScript callers get a clear error instead of a 400.
-        const unknownStatus = query.status?.find((status) => !isAgentIntentStatus(status));
-        if (unknownStatus !== undefined) {
-          throw new AgentIntentSdkError(`Unsupported intent status: ${String(unknownStatus)}.`);
-        }
-        if (query.pageSize !== undefined && !isAgentIntentPageSize(query.pageSize)) {
-          throw new AgentIntentSdkError(`Unsupported pageSize: ${String(query.pageSize)}.`);
-        }
-        if (query.status?.length) url.searchParams.set("status", query.status.join(","));
-        if (query.pageSize !== undefined) url.searchParams.set("pageSize", String(query.pageSize));
-      }
+      // Only the agent's own filters: an `agentPubkey` from a widened object is not one of them.
+      const { status, pageSize, cursor } = query;
+      const url = intentListUrl(endpoint, { status, pageSize, cursor });
       const response = await tokenProvider.withAccessToken(
         (accessToken) =>
           fetcher(url, {
@@ -184,38 +160,8 @@ export function createAgentIntentClient(input: {
   };
 }
 
-function intentUrl(endpoint: URL, intentId: string): URL {
-  // encodeURIComponent keeps "." and "..", which URL resolution would turn into another endpoint.
-  if (intentId === "" || intentId === "." || intentId === "..") {
-    throw new AgentIntentSdkError(`Invalid intent id: "${intentId}".`);
-  }
-  return new URL(encodeURIComponent(intentId), withTrailingSlash(endpoint.href));
-}
-
 export function staticAccessTokenProvider(accessToken: string): AccessTokenProvider {
   return {
     withAccessToken: (query) => query(accessToken),
   };
-}
-
-function httpError(response: Response, body: string): AgentIntentHttpError {
-  try {
-    const parsed = JSON.parse(body) as { message?: unknown; type?: unknown };
-    return new AgentIntentHttpError(
-      typeof parsed.message === "string"
-        ? parsed.message
-        : `BFF request failed (${response.status}).`,
-      response.status,
-      typeof parsed.type === "string" ? parsed.type : undefined,
-    );
-  } catch {
-    return new AgentIntentHttpError(
-      body || `BFF request failed (${response.status}).`,
-      response.status,
-    );
-  }
-}
-
-function withTrailingSlash(value: string): string {
-  return value.endsWith("/") ? value : `${value}/`;
 }

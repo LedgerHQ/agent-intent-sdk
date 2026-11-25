@@ -582,6 +582,18 @@ describe("agent intent listing", () => {
     );
   });
 
+  it("ignores an agentPubkey filter, which only the reviewer listing takes", async () => {
+    const { client, fetcher } = listingClient(new Response("[]", { status: 200 }));
+    const query = { status: ["signed"], agentPubkey: "" } as ListAgentIntentsQuery;
+
+    await expect(client.listIntents(query)).resolves.toEqual({ intents: [] });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledWith(
+      new URL("https://bff.example/agent-intent/v1/intents?status=signed"),
+      expect.anything(),
+    );
+  });
+
   it("keeps a description that looks like an amount as it is", async () => {
     const record = { ...RECORD, intent: { ...RECORD.intent, description: 'pay "amount":1, now' } };
     const { client } = listingClient(new Response(JSON.stringify([record]), { status: 200 }));
