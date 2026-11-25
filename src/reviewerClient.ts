@@ -194,8 +194,7 @@ export function createAgentIntentReviewerClient(input: {
     listAgentProfiles: async () => parseProfiles(await requestOk(profiles, "GET")),
     getAgentProfile: async (agentPubkey) => {
       const { response, body } = await request(profileUrl(agentPubkey), "GET");
-      // Only the BFF's own JSON error: a gateway 404 (a wrong `bffBaseUrl`) isn't "no profile".
-      if (response.status === 404 && isBffErrorBody(body)) return undefined;
+      if (response.status === 404 && isMissingProfileBody(body)) return undefined;
       if (!response.ok) throw httpError(response, body);
       return parseProfile(body);
     },
@@ -230,10 +229,13 @@ function swapCraftBody(swap: AgentIntentSwapCraftParameters): Record<string, str
   };
 }
 
-function isBffErrorBody(body: string): boolean {
+// The BFF's missing-profile 404 has no `type`: only its message tells it from a gateway's 404.
+const MISSING_PROFILE_MESSAGE = "Agent profile not found.";
+
+function isMissingProfileBody(body: string): boolean {
   try {
     const parsed: unknown = JSON.parse(body);
-    return isRecord(parsed) && typeof parsed.message === "string";
+    return isRecord(parsed) && parsed.message === MISSING_PROFILE_MESSAGE;
   } catch {
     return false;
   }

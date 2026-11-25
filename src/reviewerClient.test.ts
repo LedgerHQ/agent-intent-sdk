@@ -408,7 +408,10 @@ describe("reviewer client: agent profiles", () => {
   });
 
   it("reads one profile, and resolves undefined when the agent has none", async () => {
-    const { client, fetcher } = reviewer(json(PROFILE), json({ message: "Not found" }, 404));
+    const { client, fetcher } = reviewer(
+      json(PROFILE),
+      json({ message: "Agent profile not found." }, 404),
+    );
 
     await expect(client.getAgentProfile("02agent")).resolves.toEqual(PROFILE);
     await expect(client.getAgentProfile("02other")).resolves.toBeUndefined();
@@ -421,8 +424,11 @@ describe("reviewer client: agent profiles", () => {
     await expect(client.getAgentProfile("02agent")).rejects.toBeInstanceOf(AgentIntentHttpError);
   });
 
-  it("throws on a 404 that isn't the BFF's, such as a wrong base URL", async () => {
-    const { client } = reviewer(new Response("<html>Not Found</html>", { status: 404 }));
+  it.each([
+    ["an HTML page", new Response("<html>Not Found</html>", { status: 404 })],
+    ["a gateway's JSON", json({ message: "no Route matched with those values" }, 404)],
+  ])("throws on a 404 from %s, not the BFF's missing profile", async (_source, response) => {
+    const { client } = reviewer(response);
 
     await expect(client.getAgentProfile("02agent")).rejects.toMatchObject({ status: 404 });
   });

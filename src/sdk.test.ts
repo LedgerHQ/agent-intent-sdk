@@ -808,14 +808,27 @@ describe("agent intent listing", () => {
 
   it("surfaces BFF errors with their status and type", async () => {
     const { client } = listingClient(
-      new Response(JSON.stringify({ type: "invalid_cursor", message: "Invalid cursor" }), {
-        status: 400,
+      new Response(JSON.stringify({ type: "token_expired", message: "Token expired" }), {
+        status: 401,
       }),
     );
 
-    const error = await client.listIntents({ cursor: "bad" }).catch((cause: unknown) => cause);
+    const error = await client.listIntents().catch((cause: unknown) => cause);
     expect(error).toBeInstanceOf(AgentIntentHttpError);
-    expect(error).toMatchObject({ status: 400, type: "invalid_cursor", message: "Invalid cursor" });
+    expect(error).toMatchObject({ status: 401, type: "token_expired", message: "Token expired" });
+  });
+
+  it("reports a cursor the BFF can't decode as a plain 400 with no type", async () => {
+    const { client } = listingClient(
+      new Response("Invalid value for: query parameter cursor", { status: 400 }),
+    );
+
+    const error = await client.listIntents({ cursor: "bad" }).catch((cause: unknown) => cause);
+    expect(error).toMatchObject({
+      status: 400,
+      type: undefined,
+      message: "Invalid value for: query parameter cursor",
+    });
   });
 });
 
