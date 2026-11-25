@@ -297,6 +297,12 @@ describe("malformed link issues", () => {
     expect(recoveryIssues({ ...recoveryLink, recovery: "false" })).toEqual([
       { field: "recovery", problem: "invalid-value" },
     ]);
+    expect(
+      recoveryIssues({ ...recoveryLink, encryptionPublicKey: hostPublicKey, trustchainId: "root" }),
+    ).toEqual([
+      { problem: "unexpected", parameter: "encryptionPublicKey" },
+      { problem: "unexpected", parameter: "trustchainId" },
+    ]);
     const { channelEnvironment: _, ...hostOnly } = recoveryLink;
     expect(recoveryIssues(hostOnly)).toEqual([{ field: "channelEnvironment", problem: "missing" }]);
     expect(
