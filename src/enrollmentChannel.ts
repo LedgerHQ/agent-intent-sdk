@@ -355,8 +355,8 @@ function runHost(
     let peer = "";
     let cipher: ChannelCipher | undefined;
     let challenge = "";
-    let phaseTimer: ReturnType<typeof setTimeout> | undefined;
-    let completionTimer: ReturnType<typeof setTimeout> | undefined;
+    let stopPhaseTimer: () => void = () => undefined;
+    let stopCompletionTimer: () => void = () => undefined;
     let stopKeepAlive: () => void = () => undefined;
     let messageQueue = Promise.resolve();
     let socket = initialSocket;
@@ -379,32 +379,32 @@ function runHost(
       () => {
         settled = true;
         state = "finished";
-        clearTimeout(phaseTimer);
-        clearTimeout(completionTimer);
+        stopPhaseTimer();
+        stopCompletionTimer();
         clearTimeout(reconnectTimer);
         stopKeepAlive();
       },
     );
     const armCandidateTimer = () => {
-      clearTimeout(phaseTimer);
-      phaseTimer = deadlineTimer(timeouts.candidateTimeoutMs, request.expiresAt, () =>
+      stopPhaseTimer();
+      stopPhaseTimer = deadlineTimer(timeouts.candidateTimeoutMs, request.expiresAt, () =>
         fail(channelError("Enrollment channel timed out waiting for the frontend candidate.")),
       );
     };
     const armHandshakeTimer = () => {
-      clearTimeout(phaseTimer);
+      stopPhaseTimer();
       // A candidate that stops answering is dropped like a relay drop, so another can connect.
       // The lost path runs directly because some sockets never report their own close.
-      phaseTimer = deadlineTimer(timeouts.handshakeTimeoutMs, request.expiresAt, () =>
+      stopPhaseTimer = deadlineTimer(timeouts.handshakeTimeoutMs, request.expiresAt, () =>
         loseSocket("Enrollment channel handshake timed out."),
       );
     };
-    completionTimer = deadlineTimer(timeouts.completionTimeoutMs, request.expiresAt, () =>
+    stopCompletionTimer = deadlineTimer(timeouts.completionTimeoutMs, request.expiresAt, () =>
       fail(channelError("Enrollment completion timed out.")),
     );
     const resetCandidate = () => {
       if (settled) return;
-      clearTimeout(phaseTimer);
+      stopPhaseTimer();
       state = "connected";
       peer = "";
       cipher = undefined;
@@ -585,7 +585,7 @@ function runHost(
               {},
             );
             if (settled) return;
-            clearTimeout(phaseTimer);
+            stopPhaseTimer();
             state = "authenticated";
             return;
           }
@@ -651,8 +651,8 @@ function runHost(
             );
             settled = true;
             state = "finished";
-            clearTimeout(completionTimer);
-            clearTimeout(phaseTimer);
+            stopCompletionTimer();
+            stopPhaseTimer();
             stopKeepAlive();
             socket.close();
             resolve(completion);
@@ -704,7 +704,7 @@ function openCandidateSession(
     | "failed" = "connecting";
   let cipher: ChannelCipher | undefined;
   let failure: AgentIntentSdkError | undefined;
-  let phaseTimer: ReturnType<typeof setTimeout> | undefined;
+  let stopPhaseTimer: () => void = () => undefined;
   let stopKeepAlive: () => void = () => undefined;
   let messageQueue = Promise.resolve();
   let deliveryDigest = "";
@@ -734,8 +734,8 @@ function openCandidateSession(
     () => state === "finished",
     () => {
       state = "failed";
-      clearTimeout(phaseTimer);
-      clearTimeout(sessionTimer);
+      stopPhaseTimer();
+      stopSessionTimer();
       stopKeepAlive();
     },
   );
@@ -745,13 +745,13 @@ function openCandidateSession(
     fail(channelError(message));
   };
   // Bounds the whole session, including the device-approval gap between connect() and deliver().
-  const sessionTimer = deadlineTimer(timeouts.completionTimeoutMs, request.expiresAt, () =>
+  const stopSessionTimer = deadlineTimer(timeouts.completionTimeoutMs, request.expiresAt, () =>
     failNamingRejection(
       "Enrollment completion delivery timed out.",
       "Enrollment rejection timed out.",
     ),
   );
-  phaseTimer = deadlineTimer(timeouts.handshakeTimeoutMs, request.expiresAt, () =>
+  stopPhaseTimer = deadlineTimer(timeouts.handshakeTimeoutMs, request.expiresAt, () =>
     fail(channelError("Enrollment channel handshake timed out.")),
   );
   // The relay closes right after it forwards the host's refusal, so a lost socket is reported
@@ -777,8 +777,8 @@ function openCandidateSession(
   );
   const finish = () => {
     state = "finished";
-    clearTimeout(phaseTimer);
-    clearTimeout(sessionTimer);
+    stopPhaseTimer();
+    stopSessionTimer();
     stopKeepAlive();
     socket.close();
   };
@@ -841,7 +841,7 @@ function openCandidateSession(
 
         if (state === "confirmed" && envelope.message === "HandshakeCompletionSucceeded") {
           await decryptPayload(requireCipher(cipher), envelope, request);
-          clearTimeout(phaseTimer);
+          stopPhaseTimer();
           state = "ready";
           resolveReady();
           return;
@@ -900,7 +900,8 @@ function openCandidateSession(
             payload,
           );
           if (state !== next) return;
-          phaseTimer = deadlineTimer(timeouts.acknowledgementTimeoutMs, request.expiresAt, () =>
+          stopPhaseTimer();
+          stopPhaseTimer = deadlineTimer(timeouts.acknowledgementTimeoutMs, request.expiresAt, () =>
             fail(channelError(timeoutMessage)),
           );
         })
@@ -1338,13 +1339,21 @@ function resolveTimeouts(
   return resolved;
 }
 
-function deadlineTimer(
-  timeoutMs: number,
-  expiresAt: string,
-  onTimeout: () => void,
-): ReturnType<typeof setTimeout> {
-  const remaining = Date.parse(expiresAt) - Date.now();
-  return setTimeout(onTimeout, Math.max(0, Math.min(timeoutMs, remaining)));
+// Delays above 2^31 - 1 ms overflow and fire almost immediately.
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
+
+function deadlineTimer(timeoutMs: number, expiresAt: string, onTimeout: () => void): () => void {
+  const deadline = Math.min(Date.now() + timeoutMs, Date.parse(expiresAt));
+  let timer: ReturnType<typeof setTimeout>;
+  const arm = () => {
+    const remaining = deadline - Date.now();
+    timer =
+      remaining > MAX_TIMEOUT_MS
+        ? setTimeout(arm, MAX_TIMEOUT_MS)
+        : setTimeout(onTimeout, Math.max(0, remaining));
+  };
+  arm();
+  return () => clearTimeout(timer);
 }
 
 async function withinDeadline<T>(
@@ -1354,16 +1363,16 @@ async function withinDeadline<T>(
   message: string,
 ): Promise<T> {
   return await new Promise<T>((resolve, reject) => {
-    const timer = deadlineTimer(timeoutMs, expiresAt, () => reject(channelError(message)));
+    const stopTimer = deadlineTimer(timeoutMs, expiresAt, () => reject(channelError(message)));
     void Promise.resolve()
       .then(operation)
       .then(
         (value) => {
-          clearTimeout(timer);
+          stopTimer();
           resolve(value);
         },
         (error: unknown) => {
-          clearTimeout(timer);
+          stopTimer();
           reject(error);
         },
       );
