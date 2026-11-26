@@ -306,6 +306,79 @@ generations of its own object below the App-18 application stream:
 take only those streams, and the App-18 agents are their members, not the
 application stream's.
 
+### Approving an intent
+
+`intentReviewReducer` holds the rules of one approval attempt and says what to
+do next. The app does each step (the BFF calls, the device, its screens) and
+reports what happened:
+
+```ts
+import {
+  createIntentReviewAttempt,
+  createOwnSignatures,
+  intentReviewReducer,
+  type IntentReviewEvent,
+} from "@ledgerhq/agent-intent-sdk";
+
+const ownSignatures = createOwnSignatures(); // one for the app, across attempts
+
+async function approve(intentId: string, family: "evm" | "solana") {
+  let attempt = createIntentReviewAttempt({ family });
+  const report = (event: IntentReviewEvent) => (attempt = intentReviewReducer(attempt, event));
+  for (;;) {
+    const { step } = attempt;
+    switch (step.type) {
+      case "craft":
+        await reviewer.craftIntent(intentId).then(
+          (craft) => report({ type: "CRAFTED", craft, at: Date.now() }),
+          (error) => report({ type: "CRAFT_FAILED", error }),
+        );
+        break;
+      case "sign":
+        // `attempt.refreshed`: say the transaction changed since the user last saw it.
+        await signOnDevice(step.rawTransaction).then(
+          (signature) => report({ type: "SIGNED", signature, at: Date.now() }),
+          (error) => report({ type: "SIGN_FAILED", error }),
+        );
+        break;
+      case "submit": {
+        const submission = reviewer.submitSignature(intentId, step.submission);
+        ownSignatures.track(intentId, submission);
+        await submission.then(
+          ({ transactionId }) => report({ type: "SUBMITTED", transactionId }),
+          (error) => report({ type: "SUBMIT_FAILED", error }),
+        );
+        break;
+      }
+      case "read-intent": {
+        const mayHaveSigned = ownSignatures.mayHaveSigned(intentId);
+        await reviewer.getIntent(intentId).then(
+          ({ status }) => report({ type: "INTENT_READ", lifecycle: status, mayHaveSigned }),
+          () => report({ type: "INTENT_READ", lifecycle: undefined, mayHaveSigned }),
+        );
+        break;
+      }
+      default:
+        // "accepted", "submission-ended", "left-review", "craft-expired" or "failed"
+        return step;
+    }
+  }
+}
+```
+
+An attempt crafts again once after a stale revision or a Solana craft signed
+more than `SOLANA_CRAFT_LIFETIME_MS` after it was crafted; `attempt.refreshed`
+then tells the app to say the transaction changed. A craft that collides with
+another craft of the intent is sent again once, and so is one after the device
+installed the app it signs with (`APP_INSTALLED`). When a submission may have
+reached the BFF, or the BFF refused a craft or a signature because the intent
+moved on, the attempt reads the intent and its status decides how it ends. A
+retry after `"failed"` or `"craft-expired"` starts a new attempt.
+
+After `"accepted"`, `pollIntentLifecycle` reads the intent until it succeeds
+or fails, and `intentLifecycleReducer` keeps the status the app shows: once the
+BFF accepted this app's broadcast, a late read can't move it back.
+
 ## User-Agent
 
 Outside browsers, the agent client's requests send `User-Agent: ledger-agent-intent-sdk/<version> (agentic)`.
