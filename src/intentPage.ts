@@ -93,7 +93,6 @@ export type AgentIntentRecord = {
   createdAt: string;
   updatedAt: string;
   failureReason?: string;
-  /** Optional until every environment's BFF sends it: older releases leave it out. */
   context?: AgentIntentContext;
 };
 

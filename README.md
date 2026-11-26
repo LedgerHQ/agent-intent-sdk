@@ -262,6 +262,10 @@ exported as types, so an app that validates with its own schemas can type them
 against these. Failed calls throw `AgentIntentHttpError` with the BFF's `status`,
 and its `type` when it sends one: one of `AGENT_INTENT_ERROR_TYPES` or a newer one.
 
+`submitSignature` takes lowercase hex: `0x` + r‖s‖v with v `1b` or `1c` on EVM,
+the 64 bytes without `0x` on Solana. It refuses any other shape before calling
+the BFF, which broadcasts whatever non-empty string it gets.
+
 ## User-Agent
 
 Outside browsers, the agent client's requests send `User-Agent: ledger-agent-intent-sdk/<version> (agentic)`.

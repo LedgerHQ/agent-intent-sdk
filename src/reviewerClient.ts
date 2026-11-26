@@ -71,7 +71,7 @@ export type AgentIntentCraft = {
 };
 
 export type AgentIntentSignatureSubmission = {
-  /** EVM: `0x` + r‖s‖v (65 bytes, v 27 or 28). Solana: the 64-byte signature as hex, without `0x`. */
+  /** Lowercase hex. EVM: `0x` + r‖s‖v (65 bytes, v `1b` or `1c`). Solana: the 64 bytes, without `0x`. */
   signature: string;
   revision: number;
 };
@@ -174,8 +174,10 @@ export function createAgentIntentReviewerClient(input: {
       return parseCraft(await requestOk(url, "POST", swap && swapCraftBody(swap)));
     },
     submitSignature: async (intentId, submission) => {
-      if (typeof submission.signature !== "string" || submission.signature === "") {
-        throw new AgentIntentSdkError("The signature must be a non-empty string.");
+      if (!isSignature(submission.signature)) {
+        throw new AgentIntentSdkError(
+          "The signature must be lowercase hex: 0x + r‖s‖v with v 1b or 1c (EVM), or 64 bytes without 0x (Solana).",
+        );
       }
       if (!Number.isSafeInteger(submission.revision) || submission.revision < 1) {
         throw new AgentIntentSdkError(`Invalid craft revision: ${String(submission.revision)}.`);
@@ -202,6 +204,9 @@ export function createAgentIntentReviewerClient(input: {
       await requestOk(profileUrl(agentPubkey), "POST", profile);
     },
     updateAgentProfile: async (agentPubkey, update) => {
+      if (Object.values(update).every((value) => value === undefined)) {
+        throw new AgentIntentSdkError("A profile update needs at least one field.");
+      }
       await requestOk(profileUrl(agentPubkey), "PATCH", update);
     },
     deleteAgentProfile: async (agentPubkey) => {
@@ -227,6 +232,14 @@ function swapCraftBody(swap: AgentIntentSwapCraftParameters): Record<string, str
     amount: swap.amount.toString(),
     gasLimit: swap.gasLimit.toString(),
   };
+}
+
+// The BFF combines and broadcasts whatever non-empty string it gets: a wrong v can fail the intent.
+const EVM_SIGNATURE = /^0x[0-9a-f]{128}(?:1b|1c)$/;
+const SOLANA_SIGNATURE = /^[0-9a-f]{128}$/;
+
+function isSignature(value: unknown): value is string {
+  return typeof value === "string" && (EVM_SIGNATURE.test(value) || SOLANA_SIGNATURE.test(value));
 }
 
 // The BFF's missing-profile 404 has no `type`: only its message tells it from a gateway's 404.
