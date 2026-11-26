@@ -424,7 +424,7 @@ describe("reviewer client: crafting and signing", () => {
 
   it.each([
     ["an EVM signature with v 1c", `0x${"ab".repeat(64)}1c`],
-    // The frontend's vector, from a Ledger Button EIP-1559 signature (intentSignature.test.ts).
+    // The frontend's vector: what it extracts from a signed EIP-1559 transaction (intentSignature.test.ts).
     [
       "a real EVM signature",
       "0x3796ba0dca371b3e73ee5cffd210ae7cc365a0762dad77762ee0fbf06dfad2bc3aab6cfa90ccd2091d4d59d2c405afa60b962e171315378dc4dfd1d04cbacfbd1c",
