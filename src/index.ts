@@ -1,3 +1,39 @@
+export {
+  encodeAgentMemberName,
+  encodeBrowserMemberName,
+  isAgentMember,
+  normalizeAgentKey,
+  type AgentIntentTrustchainMember,
+} from "./agentMembers.ts";
+export {
+  deriveAgentRestore,
+  resolveAgent,
+  resolveAgents,
+  toKnownAgentSource,
+  type AgentResourceStatus,
+  type AgentRestoreKind,
+  type App16Lookup,
+  type App18Members,
+  type KnownAgentProfile,
+  type OptionalProfileResult,
+  type ProfileListResult,
+  type ResolveAgentInput,
+  type ResolveAgentsInput,
+  type ResolvedAgent,
+  type ResolvedAgents,
+  type ResourceStatus,
+} from "./agentStatus.ts";
+export {
+  assertApp18SubtreePathDepth,
+  discoverAgentMembers,
+  findOpenAgentSubtree,
+  findOpenAgentSubtreeStream,
+  isAgentSubtreeStreamPath,
+  legacyAgentMembers,
+  mergeMembers,
+  nextAgentSubtreePath,
+  type AgentIntentTrustchainStream,
+} from "./agentStreams.ts";
 export * from "./auth.ts";
 export * from "./bytes.ts";
 export * from "./client.ts";

@@ -266,6 +266,49 @@ and its `type` when it sends one: one of `AGENT_INTENT_ERROR_TYPES` or a newer o
 the 64 bytes without `0x` on Solana. It refuses any other shape before calling
 the BFF, which broadcasts whatever non-empty string it gets.
 
+### Agents in the user's Trustchain
+
+Pure helpers combine what the user's app reads about each agent: its App-18
+member, its App-16 member and its BFF profile. They take LKRP members and
+streams by shape, so the SDK doesn't depend on LKRP.
+
+```ts
+import {
+  deriveAgentRestore,
+  discoverAgentMembers,
+  nextAgentSubtreePath,
+  resolveAgents,
+} from "@ledgerhq/agent-intent-sdk";
+
+// `getStreams` needs @ledgerhq/ledger-key-ring-protocol 1.3.0. The trailing `/` leaves
+// the application stream itself out.
+const streams = await lkrp.getStreams(trustchain, memberCredentials, {
+  pathPrefix: `${applicationPath}/`,
+});
+const { agents, unrecognized } = resolveAgents({
+  profiles: { status: "success", profiles: await reviewer.listAgentProfiles() },
+  // `undefined` while the App-18 session is unknown.
+  app18: {
+    members: [currentMember, ...discoverAgentMembers(streams)],
+    currentMemberId: currentMember.id,
+  },
+  app16: (key) => (app16Keys.has(key) ? "present" : "missing"), // `key` is lowercased
+});
+const restores = agents.map(({ status }) => deriveAgentRestore(status)); // "agent-access" | "account-access" | undefined
+
+const path = nextAgentSubtreePath(applicationPath, agentPublicKey, streams);
+```
+
+A status the app couldn't read stays `"unknown"`, never `"missing"`, and a
+restore is offered only when the other Trustchain membership was read as
+present. An agent is an identify-only member (permissions 0). Its streams are
+generations of its own object below the App-18 application stream:
+`<applicationPath>/<object>'/<generation>'`, at most 6 levels deep. The helpers
+take only those streams, and the App-18 agents are their members. Agents enrolled
+before the web app moved them into their own streams can still be members of the
+application stream: add them with
+`mergeMembers(discoverAgentMembers(streams), legacyAgentMembers(applicationStream.members, currentMember.id))`.
+
 ## User-Agent
 
 Outside browsers, the agent client's requests send `User-Agent: ledger-agent-intent-sdk/<version> (agentic)`.
