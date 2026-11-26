@@ -1,4 +1,5 @@
 import { AgentIntentSdkError } from "./bytes.ts";
+import { isNonEmptyString, isRecord, parseJson } from "./json.ts";
 
 export const AGENT_INTENT_STATUSES = [
   "created",
@@ -79,6 +80,10 @@ export function isSwapOperation(
   return operation.type === "swap" && hasKnownFields(operation);
 }
 
+export type AgentIntentContext = {
+  transactionId?: string;
+};
+
 /** `status` stays open so that a state a newer BFF adds never breaks parsing. */
 export type AgentIntentRecord = {
   id: string;
@@ -88,12 +93,13 @@ export type AgentIntentRecord = {
   createdAt: string;
   updatedAt: string;
   failureReason?: string;
+  context?: AgentIntentContext;
 };
 
 export type ListAgentIntentsQuery = {
   status?: readonly AgentIntentStatus[];
   pageSize?: AgentIntentPageSize;
-  /** A page's `nextCursor`; when set, the first page's `status` and `pageSize` apply. */
+  /** A page's `nextCursor`; when set, the first page's filters and `pageSize` apply. */
   cursor?: string;
 };
 
@@ -136,14 +142,6 @@ export function parseAgentIntentRecord(body: string): AgentIntentRecord {
   return parsed;
 }
 
-function parseJson(body: string, subject: string): unknown {
-  try {
-    return JSON.parse(body);
-  } catch (cause) {
-    throw new AgentIntentSdkError(`BFF returned ${subject} that is not valid JSON.`, { cause });
-  }
-}
-
 function isAgentIntentRecord(value: unknown): value is AgentIntentRecord {
   if (typeof value !== "object" || value === null) return false;
   const record = value as Record<string, unknown>;
@@ -154,7 +152,14 @@ function isAgentIntentRecord(value: unknown): value is AgentIntentRecord {
     typeof record.createdAt === "string" &&
     typeof record.updatedAt === "string" &&
     (record.failureReason === undefined || typeof record.failureReason === "string") &&
+    (record.context === undefined || isContext(record.context)) &&
     isOperation(record.intent)
+  );
+}
+
+function isContext(value: unknown): value is AgentIntentContext {
+  return (
+    isRecord(value) && (value.transactionId === undefined || isNonEmptyString(value.transactionId))
   );
 }
 
