@@ -1,7 +1,10 @@
-import { parseAgentMember, type AgentIntentTrustchainMember } from "./agentMembers.ts";
+import {
+  isAgentMember,
+  normalizeAgentKey,
+  type AgentIntentTrustchainMember,
+} from "./agentMembers.ts";
 import { AgentIntentSdkError } from "./bytes.ts";
 
-/** Only streams below the application stream: LKRP's `getStreams` with `${applicationPath}/` as `pathPrefix`. */
 export type AgentIntentTrustchainStream<
   Member extends AgentIntentTrustchainMember = AgentIntentTrustchainMember,
 > = {
@@ -91,7 +94,7 @@ export function discoverAgentMembers<Member extends AgentIntentTrustchainMember>
   for (const subtree of subtrees) {
     if (subtree.closed) continue;
     for (const member of subtree.members) {
-      if (parseAgentMember(member)) byPublicKey.set(member.id.toLowerCase(), member);
+      if (isAgentMember(member)) byPublicKey.set(normalizeAgentKey(member.id), member);
     }
   }
   return [...byPublicKey.values()];
@@ -102,7 +105,7 @@ export function mergeMembers<Member extends AgentIntentTrustchainMember>(
 ): Member[] {
   const members = new Map<string, Member>();
   for (const member of groups.flat()) {
-    members.set(member.id.toLowerCase(), member);
+    members.set(normalizeAgentKey(member.id), member);
   }
   return [...members.values()];
 }
@@ -112,10 +115,9 @@ export function legacyAgentMembers<Member extends AgentIntentTrustchainMember>(
   members: readonly Member[],
   currentMemberId: string,
 ): Member[] {
+  const current = normalizeAgentKey(currentMemberId);
   return members.filter(
-    (member) =>
-      member.id.toLowerCase() !== currentMemberId.toLowerCase() &&
-      parseAgentMember(member) !== undefined,
+    (member) => normalizeAgentKey(member.id) !== current && isAgentMember(member),
   );
 }
 
@@ -144,7 +146,8 @@ function checkedStreamPath(applicationPath: string, path: string): string {
 }
 
 function hasMember(subtree: AgentIntentTrustchainStream, publicKey: string): boolean {
-  return subtree.members.some((member) => member.id.toLowerCase() === publicKey.toLowerCase());
+  const key = normalizeAgentKey(publicKey);
+  return subtree.members.some((member) => normalizeAgentKey(member.id) === key);
 }
 
 function agentSubtreeStreamPattern(applicationPath: string): RegExp {

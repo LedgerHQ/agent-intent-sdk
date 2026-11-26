@@ -114,6 +114,29 @@ describe("resolveAgents", () => {
     }
   });
 
+  it("lists no agents when both the profile list and App-18 are unavailable", () => {
+    expect(resolveAgents({ profiles: { status: "error" }, app18: undefined })).toEqual({
+      source: "app18-fallback",
+      loading: false,
+      agents: [],
+      unrecognized: [],
+    });
+  });
+
+  it("looks App-16 up for the fallback and unrecognized agents too", () => {
+    const app16 = (key: string): ResourceStatus =>
+      key === AGENT.toLowerCase() ? "present" : "missing";
+
+    expect(
+      resolveAgents({ profiles: { status: "error" }, app18: authenticated([AGENT]), app16 })
+        .agents[0]?.status.app16,
+    ).toBe("present");
+    expect(
+      resolveAgents({ profiles: loaded(), app18: authenticated([AGENT]), app16 }).unrecognized[0]
+        ?.status.app16,
+    ).toBe("present");
+  });
+
   it("claims nothing while the profile list loads", () => {
     expect(
       resolveAgents({ profiles: { status: "loading" }, app18: authenticated([AGENT]) }),
@@ -250,6 +273,20 @@ describe("resolveAgent", () => {
       }).status.profile,
     ).toBe("present");
     expect(resolveAgent({ pubkey: AGENT, app18 }).status.profile).toBe("unknown");
+    expect(
+      resolveAgent({
+        pubkey: AGENT,
+        app18,
+        profiles: { status: "loading" },
+        profile: { status: "success", profile: profile(AGENT) },
+      }).status.profile,
+    ).toBe("present");
+  });
+
+  it("keeps the member's casing as the pubkey when there is no profile", () => {
+    expect(
+      resolveAgent({ pubkey: AGENT.toLowerCase(), app18: authenticated([AGENT]) }).pubkey,
+    ).toBe(AGENT);
   });
 
   it("ignores an optional profile that belongs to another agent", () => {
