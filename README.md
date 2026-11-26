@@ -280,7 +280,8 @@ import {
   resolveAgents,
 } from "@ledgerhq/agent-intent-sdk";
 
-// The trailing `/` leaves the application stream itself out.
+// `getStreams` needs @ledgerhq/ledger-key-ring-protocol 1.3.0. The trailing `/` leaves
+// the application stream itself out.
 const streams = await lkrp.getStreams(trustchain, memberCredentials, {
   pathPrefix: `${applicationPath}/`,
 });
@@ -303,8 +304,10 @@ restore is offered only when the other Trustchain membership was read as
 present. An agent is an identify-only member (permissions 0). Its streams are
 generations of its own object below the App-18 application stream:
 `<applicationPath>/<object>'/<generation>'`, at most 6 levels deep. The helpers
-take only those streams, and the App-18 agents are their members, not the
-application stream's.
+take only those streams, and the App-18 agents are their members. Agents enrolled
+before the web app moved them into their own streams can still be members of the
+application stream: add them with
+`mergeMembers(discoverAgentMembers(streams), legacyAgentMembers(applicationStream.members, currentMember.id))`.
 
 ## User-Agent
 

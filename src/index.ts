@@ -1,12 +1,12 @@
 export {
   encodeAgentMemberName,
   encodeBrowserMemberName,
-  parseAgentMember,
+  isAgentMember,
+  normalizeAgentKey,
   type AgentIntentTrustchainMember,
 } from "./agentMembers.ts";
 export {
   deriveAgentRestore,
-  normalizeAgentKey,
   resolveAgent,
   resolveAgents,
   toKnownAgentSource,

@@ -71,6 +71,24 @@ describe("App-18 agent subtree association", () => {
     ).toBe(`${applicationPath}/152709949'/0'`);
   });
 
+  it("wraps past the last object index when the agent's object is taken", () => {
+    const lastIndexAgent = `02${"ff".repeat(4)}${"00".repeat(28)}`;
+    const lastObject = `${applicationPath}/2147483647'`;
+
+    expect(agentSubtreeNamespace(applicationPath, lastIndexAgent)).toBe(lastObject);
+    expect(
+      nextAgentSubtreePath(applicationPath, lastIndexAgent, [
+        { path: `${lastObject}/0'`, members: [agent], closed: false },
+      ]),
+    ).toBe(`${applicationPath}/0'/0'`);
+  });
+
+  it("refuses an agent stream below an application path too deep for the backend", () => {
+    expect(() => nextAgentSubtreePath(`${applicationPath}/1'`, agentPublicKey, [])).toThrow(
+      "exceeds the supported backend maximum 6",
+    );
+  });
+
   it("does not claim an unattributable frontend-only partial stream", () => {
     expect(
       nextAgentSubtreePath(applicationPath, agentPublicKey, [
@@ -142,6 +160,18 @@ describe("App-18 agent subtree association", () => {
         },
       ]),
     ).toEqual([agent]);
+  });
+
+  it("lists an agent once when two open streams hold it under different casings", () => {
+    const lower = { ...agent, id: `02${"ab".repeat(32)}` };
+    const upper = { ...lower, id: lower.id.toUpperCase() };
+
+    expect(
+      discoverAgentMembers([
+        { path: `${applicationPath}/1'/0'`, members: [lower], closed: false },
+        { path: `${applicationPath}/7'/0'`, members: [upper], closed: false },
+      ]),
+    ).toEqual([upper]);
   });
 });
 

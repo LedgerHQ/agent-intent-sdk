@@ -1,4 +1,8 @@
-import { parseAgentMember, type AgentIntentTrustchainMember } from "./agentMembers.ts";
+import {
+  isAgentMember,
+  normalizeAgentKey,
+  type AgentIntentTrustchainMember,
+} from "./agentMembers.ts";
 import { isAgentSource, type AgentSource } from "./enrollment.ts";
 import type { AgentProfileRecord } from "./reviewerClient.ts";
 
@@ -41,13 +45,11 @@ export type App18Members<
   Member extends AgentIntentTrustchainMember = AgentIntentTrustchainMember,
 > =
   | {
-      /** The current member and the agents of the App-18 agent streams (`discoverAgentMembers`). */
       members: readonly Member[];
       currentMemberId: string;
     }
   | undefined;
 
-/** Receives the lowercased pubkey. */
 export type App16Lookup = (key: string) => ResourceStatus;
 
 export type ResolveAgentsInput<
@@ -68,10 +70,6 @@ export type ResolvedAgents<
   /** App-18 agent members without a profile; only set once profiles loaded. */
   unrecognized: ResolvedAgent<Member>[];
 };
-
-export function normalizeAgentKey(pubkey: string): string {
-  return pubkey.toLowerCase();
-}
 
 export function resolveAgents<Member extends AgentIntentTrustchainMember>({
   profiles,
@@ -184,7 +182,6 @@ function toKnownAgentProfile(agent: AgentProfileRecord): KnownAgentProfile {
   return { ...agent, profile: { ...profile, source: toKnownAgentSource(profile.source) } };
 }
 
-/** Which missing Trustchain membership can be restored for an agent. */
 export type AgentRestoreKind = "agent-access" | "account-access";
 
 /** Device-signed Trustchain data proves the Ledger approved this key; a BFF profile alone doesn't. */
@@ -203,7 +200,7 @@ function agentMembers<Member extends AgentIntentTrustchainMember>(
   const result = new Map<string, Member>();
   for (const member of app18.members) {
     const key = normalizeAgentKey(member.id);
-    if (key === current || !parseAgentMember(member)) continue;
+    if (key === current || !isAgentMember(member)) continue;
     result.set(key, member);
   }
   return result;
