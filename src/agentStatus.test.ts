@@ -242,7 +242,28 @@ describe("resolveAgent", () => {
     expect(
       resolveAgent({ pubkey: AGENT, app18, profile: { status: "error" } }).status.profile,
     ).toBe("unknown");
+    expect(
+      resolveAgent({
+        pubkey: AGENT.toLowerCase(),
+        app18,
+        profile: { status: "success", profile: profile(AGENT) },
+      }).status.profile,
+    ).toBe("present");
     expect(resolveAgent({ pubkey: AGENT, app18 }).status.profile).toBe("unknown");
+  });
+
+  it("ignores an optional profile that belongs to another agent", () => {
+    const agent = resolveAgent({
+      pubkey: AGENT,
+      app18: authenticated([AGENT]),
+      profile: { status: "success", profile: profile(OTHER_AGENT) },
+      app16: (key) => (key === AGENT.toLowerCase() ? "present" : "missing"),
+    });
+
+    expect(agent.pubkey).toBe(AGENT);
+    expect(agent.profile).toBeUndefined();
+    expect(agent.status).toEqual({ app18: "present", app16: "present", profile: "unknown" });
+    expect(deriveAgentRestore(agent.status)).toBeUndefined();
   });
 
   it("reports a fully missing agent only when every read succeeded", () => {

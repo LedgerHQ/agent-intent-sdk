@@ -157,7 +157,8 @@ export function resolveAgent<Member extends AgentIntentTrustchainMember>({
   let knownProfile: KnownAgentProfile | undefined;
   if (found?.status === "success") {
     if (found.profile === null || found.profile === undefined) profileStatus = "missing";
-    else {
+    // A query cache can still hold the previous agent's profile while this one loads.
+    else if (normalizeAgentKey(found.profile.agentPubkey) === key) {
       profileStatus = "present";
       knownProfile = toKnownAgentProfile(found.profile);
     }

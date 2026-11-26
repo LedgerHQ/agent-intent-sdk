@@ -48,7 +48,12 @@ export function parseAgentMember<Member extends Pick<AgentIntentTrustchainMember
 
 function encodeDisplayName(name: string): string {
   assertDisplayName(name);
-  return encodeURIComponent(name);
+  try {
+    return encodeURIComponent(name);
+  } catch {
+    // A lone surrogate, such as a name cut in the middle of an emoji.
+    throw new AgentIntentSdkError("Trustchain member display name must be well-formed Unicode.");
+  }
 }
 
 function decodeDisplayName(value: string | undefined): string | undefined {

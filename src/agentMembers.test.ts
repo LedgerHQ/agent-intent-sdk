@@ -60,6 +60,12 @@ describe("Trustchain member names", () => {
     expect(encodeAgentMemberName("a".repeat(80))).toHaveLength(80);
   });
 
+  it("rejects a browser name cut in the middle of an emoji", () => {
+    const cut = `${"a".repeat(79)}🤖`.slice(0, 80);
+
+    expect(() => encodeBrowserMemberName(cut)).toThrow(AgentIntentSdkError);
+  });
+
   it("classifies identify-only members independently of their stored name", () => {
     const valid = { id: "agent", name: encodeAgentMemberName("Buyer"), permissions: MEMBER };
 
