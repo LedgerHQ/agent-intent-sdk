@@ -6,6 +6,7 @@ import {
   createAgentIntentReviewerClient,
   isAgentIntentErrorType,
   isStaleRevisionError,
+  type AgentIntentReviewerClient,
   type AgentIntentSwapCraftParameters,
 } from "./reviewerClient.ts";
 
@@ -36,6 +37,15 @@ const PROFILE = {
   createdAt: "2026-10-07T10:00:00Z",
   updatedAt: "2026-10-07T10:00:00Z",
 };
+
+const PROFILE_WITH_ICON = {
+  ...PROFILE,
+  agentPubkey: "02iconic",
+  profile: { ...PROFILE.profile, iconRef: "robot" },
+};
+
+const EVM_SIGNATURE = `0x${"ab".repeat(64)}1b`;
+const SOLANA_SIGNATURE = "cd".repeat(64);
 
 function reviewer(...responses: Response[]) {
   const fetcher = vi.fn<typeof fetch>();
@@ -101,7 +111,14 @@ describe("reviewer client: intents", () => {
     expect(sentRequest(fetcher).url).toBe(`${BFF}/v1/intents/${INTENT_ID}`);
   });
 
-  it("reads an intent from a BFF that doesn't send the context yet", async () => {
+  it("reads an intent not broadcast yet, whose context is empty", async () => {
+    const notBroadcast = { ...RECORD, status: "crafted", context: {} };
+    const { client } = reviewer(json(notBroadcast));
+
+    await expect(client.getIntent(INTENT_ID)).resolves.toEqual(notBroadcast);
+  });
+
+  it("reads an intent without a context", async () => {
     const { context: _context, ...withoutContext } = RECORD;
     const { client } = reviewer(json(withoutContext));
 
@@ -174,7 +191,7 @@ describe("reviewer client: intents", () => {
     );
 
     const error = await client
-      .submitSignature(INTENT_ID, { signature: "0x1b", revision: 1 })
+      .submitSignature(INTENT_ID, { signature: EVM_SIGNATURE, revision: 1 })
       .catch((cause: unknown) => cause);
     expect(error).toBeInstanceOf(AgentIntentHttpError);
     expect(error).toMatchObject({
@@ -201,57 +218,106 @@ describe("reviewer client: intents", () => {
     expect(new Headers(sentRequest(fetcher).init.headers).has("User-Agent")).toBe(false);
   });
 
-  it("lets the token provider retry a call the BFF refused with 401", async () => {
-    const fetcher = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(new Response("", { status: 401 }))
-      .mockResolvedValueOnce(json(RECORD));
-    const tokens = ["expired-token", "fresh-token"];
-    const tokenProvider: AccessTokenProvider = {
-      withAccessToken: async (query, retryWhen) => {
-        const first = await query(tokens[0]!);
-        return retryWhen?.(first) ? query(tokens[1]!) : first;
-      },
-    };
-    const client = createAgentIntentReviewerClient({
-      bffBaseUrl: BFF,
-      tokenProvider,
-      fetch: fetcher,
-    });
+  const EVERY_METHOD: [
+    string,
+    (client: AgentIntentReviewerClient) => Promise<unknown>,
+    () => Response,
+  ][] = [
+    ["listIntents", (client) => client.listIntents(), () => json([RECORD])],
+    ["getIntent", (client) => client.getIntent(INTENT_ID), () => json(RECORD)],
+    [
+      "getIntentStats",
+      (client) => client.getIntentStats(),
+      () => json({ total: 0, approved: 0, rejected: 0 }),
+    ],
+    [
+      "craftIntent",
+      (client) => client.craftIntent(INTENT_ID),
+      () => json({ rawTransaction: "0x02ef", revision: 1 }),
+    ],
+    [
+      "submitSignature",
+      (client) => client.submitSignature(INTENT_ID, { signature: EVM_SIGNATURE, revision: 1 }),
+      () => json({ transactionId: "0xabc" }),
+    ],
+    [
+      "rejectIntent",
+      (client) => client.rejectIntent(INTENT_ID),
+      () => new Response(null, { status: 204 }),
+    ],
+    ["listAgentProfiles", (client) => client.listAgentProfiles(), () => json([PROFILE])],
+    ["getAgentProfile", (client) => client.getAgentProfile("02agent"), () => json(PROFILE)],
+    [
+      "createAgentProfile",
+      (client) => client.createAgentProfile("02agent", PROFILE.profile),
+      () => new Response(null, { status: 201 }),
+    ],
+    [
+      "updateAgentProfile",
+      (client) => client.updateAgentProfile("02agent", { name: "Renamed" }),
+      () => new Response(null, { status: 200 }),
+    ],
+    [
+      "deleteAgentProfile",
+      (client) => client.deleteAgentProfile("02agent"),
+      () => new Response(null, { status: 204 }),
+    ],
+  ];
 
-    await expect(client.getIntent(INTENT_ID)).resolves.toEqual(RECORD);
-    expect(fetcher).toHaveBeenCalledTimes(2);
-    expect(fetcher).toHaveBeenLastCalledWith(
-      expect.any(URL),
-      expect.objectContaining({
-        headers: expect.objectContaining({ Authorization: "Bearer fresh-token" }),
-      }),
-    );
-  });
+  it.each(EVERY_METHOD)(
+    "lets the token provider retry %s after a 401",
+    async (_method, call, success) => {
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response("", { status: 401 }))
+        .mockResolvedValueOnce(success());
+      const tokens = ["expired-token", "fresh-token"];
+      const tokenProvider: AccessTokenProvider = {
+        withAccessToken: async (query, retryWhen) => {
+          const first = await query(tokens[0]!);
+          return retryWhen?.(first) ? query(tokens[1]!) : first;
+        },
+      };
+      const client = createAgentIntentReviewerClient({
+        bffBaseUrl: BFF,
+        tokenProvider,
+        fetch: fetcher,
+      });
 
-  it("fails with the 401 when the retried call is refused too", async () => {
-    const fetcher = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(json({ message: "Token expired", type: "token_expired" }, 401))
-      .mockResolvedValueOnce(json({ message: "Token expired", type: "token_expired" }, 401));
-    const tokenProvider: AccessTokenProvider = {
-      withAccessToken: async (query, retryWhen) => {
-        const first = await query("expired-token");
-        return retryWhen?.(first) ? query("refreshed-token") : first;
-      },
-    };
-    const client = createAgentIntentReviewerClient({
-      bffBaseUrl: BFF,
-      tokenProvider,
-      fetch: fetcher,
-    });
+      await call(client);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(fetcher).toHaveBeenLastCalledWith(
+        expect.any(URL),
+        expect.objectContaining({
+          headers: expect.objectContaining({ Authorization: "Bearer fresh-token" }),
+        }),
+      );
+    },
+  );
 
-    await expect(client.rejectIntent(INTENT_ID)).rejects.toMatchObject({
-      status: 401,
-      type: "token_expired",
-    });
-    expect(fetcher).toHaveBeenCalledTimes(2);
-  });
+  it.each(EVERY_METHOD)(
+    "fails %s with the 401 when the retried call is refused too",
+    async (_method, call) => {
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(json({ message: "Token expired", type: "token_expired" }, 401))
+        .mockResolvedValueOnce(json({ message: "Token expired", type: "token_expired" }, 401));
+      const tokenProvider: AccessTokenProvider = {
+        withAccessToken: async (query, retryWhen) => {
+          const first = await query("expired-token");
+          return retryWhen?.(first) ? query("refreshed-token") : first;
+        },
+      };
+      const client = createAgentIntentReviewerClient({
+        bffBaseUrl: BFF,
+        tokenProvider,
+        fetch: fetcher,
+      });
+
+      await expect(call(client)).rejects.toMatchObject({ status: 401, type: "token_expired" });
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    },
+  );
 });
 
 describe("reviewer client: crafting and signing", () => {
@@ -333,13 +399,13 @@ describe("reviewer client: crafting and signing", () => {
     const { client, fetcher } = reviewer(json({ transactionId: "0xabc" }));
 
     await expect(
-      client.submitSignature(INTENT_ID, { signature: "0x1b", revision: 2 }),
+      client.submitSignature(INTENT_ID, { signature: EVM_SIGNATURE, revision: 2 }),
     ).resolves.toEqual({ transactionId: "0xabc" });
     expect(sentRequest(fetcher)).toEqual({
       url: `${BFF}/v1/intents/${INTENT_ID}/signature`,
       init: expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ signature: "0x1b", revision: 2 }),
+        body: JSON.stringify({ signature: EVM_SIGNATURE, revision: 2 }),
       }),
     });
   });
@@ -350,17 +416,44 @@ describe("reviewer client: crafting and signing", () => {
       const { client, fetcher } = reviewer();
 
       await expect(
-        client.submitSignature(INTENT_ID, { signature: "0x1b", revision }),
+        client.submitSignature(INTENT_ID, { signature: EVM_SIGNATURE, revision }),
       ).rejects.toThrow(AgentIntentSdkError);
       expect(fetcher).not.toHaveBeenCalled();
     },
   );
 
-  it("refuses an empty signature without calling the BFF", async () => {
+  it.each([
+    ["an EVM signature with v 1c", `0x${"ab".repeat(64)}1c`],
+    // The frontend's vector, from a Ledger Button EIP-1559 signature (intentSignature.test.ts).
+    [
+      "a real EVM signature",
+      "0x3796ba0dca371b3e73ee5cffd210ae7cc365a0762dad77762ee0fbf06dfad2bc3aab6cfa90ccd2091d4d59d2c405afa60b962e171315378dc4dfd1d04cbacfbd1c",
+    ],
+    ["a Solana signature", SOLANA_SIGNATURE],
+  ])("submits %s", async (_shape, signature) => {
+    const { client, fetcher } = reviewer(json({ transactionId: "0xabc" }));
+
+    await client.submitSignature(INTENT_ID, { signature, revision: 1 });
+    expect(sentRequest(fetcher).init.body).toBe(JSON.stringify({ signature, revision: 1 }));
+  });
+
+  it.each([
+    ["an empty string", ""],
+    ["a bare v", "0x1b"],
+    ["an EVM signature with v 00", `0x${"ab".repeat(64)}00`],
+    ["an EVM signature with v 01", `0x${"ab".repeat(64)}01`],
+    ["an EVM signature in uppercase", `0x${"AB".repeat(64)}1B`],
+    ["an EVM signature with a 31-byte r", `0x${"ab".repeat(63)}1b`],
+    ["an EVM signature one byte too long", `0x${"ab".repeat(65)}1b`],
+    ["an EVM signature without 0x", `${"ab".repeat(64)}1b`],
+    ["a Solana signature with 0x", `0x${SOLANA_SIGNATURE}`],
+    ["a Solana signature in uppercase", "CD".repeat(64)],
+    ["a 63-byte Solana signature", "cd".repeat(63)],
+  ])("refuses %s as a signature without calling the BFF", async (_shape, signature) => {
     const { client, fetcher } = reviewer();
 
-    await expect(client.submitSignature(INTENT_ID, { signature: "", revision: 1 })).rejects.toThrow(
-      "The signature must be a non-empty string.",
+    await expect(client.submitSignature(INTENT_ID, { signature, revision: 1 })).rejects.toThrow(
+      "The signature must be lowercase hex: 0x + r‖s‖v with v 1b or 1c (EVM), or 64 bytes without 0x (Solana).",
     );
     expect(fetcher).not.toHaveBeenCalled();
   });
@@ -370,7 +463,7 @@ describe("reviewer client: crafting and signing", () => {
       json({ message: "Craft is stale", type: "stale_revision" }, 409),
       json({ message: "Another craft is running", type: "duplicate_event" }, 409),
     );
-    const submission = { signature: "0x1b", revision: 1 };
+    const submission = { signature: EVM_SIGNATURE, revision: 1 };
 
     const stale = await client.submitSignature(INTENT_ID, submission).catch((e: unknown) => e);
     const other = await client.submitSignature(INTENT_ID, submission).catch((e: unknown) => e);
@@ -394,16 +487,16 @@ describe("reviewer client: crafting and signing", () => {
     const { client } = reviewer(json({ transactionId: "" }));
 
     await expect(
-      client.submitSignature(INTENT_ID, { signature: "0x1b", revision: 1 }),
+      client.submitSignature(INTENT_ID, { signature: EVM_SIGNATURE, revision: 1 }),
     ).rejects.toThrow("BFF returned a signature receipt with an unexpected shape.");
   });
 });
 
 describe("reviewer client: agent profiles", () => {
-  it("lists the agent profiles", async () => {
-    const { client, fetcher } = reviewer(json([PROFILE]));
+  it("lists the agent profiles, with an icon or without", async () => {
+    const { client, fetcher } = reviewer(json([PROFILE, PROFILE_WITH_ICON]));
 
-    await expect(client.listAgentProfiles()).resolves.toEqual([PROFILE]);
+    await expect(client.listAgentProfiles()).resolves.toEqual([PROFILE, PROFILE_WITH_ICON]);
     expect(sentRequest(fetcher).url).toBe(`${BFF}/v1/agent-profiles`);
   });
 
@@ -451,6 +544,25 @@ describe("reviewer client: agent profiles", () => {
       [`${BFF}/v1/agent-profiles/02%2Fagent`, "PATCH", JSON.stringify({ name: "Renamed" })],
       [`${BFF}/v1/agent-profiles/02%2Fagent`, "DELETE", undefined],
     ]);
+  });
+
+  it.each([
+    ["no key", {}],
+    ["only undefined values", { name: undefined }],
+  ])("refuses a profile update with %s without calling the BFF", async (_shape, update) => {
+    const { client, fetcher } = reviewer();
+
+    await expect(client.updateAgentProfile("02agent", update)).rejects.toThrow(
+      "A profile update needs at least one field.",
+    );
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("sends the fields of an update that also has undefined ones", async () => {
+    const { client, fetcher } = reviewer(new Response(null, { status: 200 }));
+
+    await client.updateAgentProfile("02agent", { name: undefined, description: "Pays rent" });
+    expect(sentRequest(fetcher).init.body).toBe(JSON.stringify({ description: "Pays rent" }));
   });
 
   it("refuses a profile key that would resolve to another endpoint", async () => {
