@@ -31,7 +31,6 @@ export type IntentLifecycleEvent =
   | { type: "RECEIPT"; transactionId: string }
   | { type: "LIFECYCLE"; lifecycle: Lifecycle };
 
-/** Keeps the app's own fields, such as its device action state. */
 export function intentLifecycleReducer<State extends IntentLifecycleState>(
   state: State,
   event: IntentLifecycleEvent,
@@ -70,7 +69,6 @@ export async function pollIntentLifecycle<Intent extends { status: Lifecycle }>(
   onRefreshed,
 }: {
   intentId: string;
-  /** Reads, one second apart. Defaults to 8. */
   attempts?: number;
   refresh(intentId: string): Promise<Intent>;
   wait?(milliseconds: number): Promise<void>;

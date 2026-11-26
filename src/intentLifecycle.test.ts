@@ -236,6 +236,25 @@ describe("pollIntentLifecycle", () => {
     expect(refresh).toHaveBeenCalledTimes(8);
   });
 
+  it("waits one second between reads by default", async () => {
+    vi.useFakeTimers();
+    try {
+      const refresh = vi
+        .fn()
+        .mockResolvedValueOnce({ status: "broadcast" })
+        .mockResolvedValue({ status: "success" });
+      const polling = pollIntentLifecycle({ intentId: "intent-1", refresh, onRefreshed: vi.fn() });
+
+      await vi.advanceTimersByTimeAsync(999);
+      expect(refresh).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      await polling;
+      expect(refresh).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("rejects when the app's callback throws, without reading again", async () => {
     const refresh = vi.fn(async () => ({ status: "broadcast" as const }));
     const failure = new Error("cache update failed");

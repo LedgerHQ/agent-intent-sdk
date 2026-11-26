@@ -21,7 +21,6 @@ export type IntentReviewStep =
   | { type: "craft" }
   | { type: "sign"; rawTransaction: string }
   | { type: "submit"; submission: AgentIntentSignatureSubmission }
-  /** Read the intent: its status decides how an unclear failure ends. */
   | { type: "read-intent" }
   | { type: "accepted"; lifecycle: "broadcast" | "success"; transactionId?: string }
   /** No retry: the BFF ended the intent, or kept it signed without a broadcast. */
@@ -83,7 +82,9 @@ export function intentReviewReducer(
         return failed(
           attempt,
           "craft",
-          new AgentIntentSdkError(`The crafted transaction isn't a ${attempt.family} transaction.`),
+          new AgentIntentSdkError(
+            `The crafted transaction isn't ${attempt.family === "evm" ? "an EVM" : "a Solana"} transaction.`,
+          ),
         );
       }
       return {
@@ -186,8 +187,9 @@ function isOneOf<const Statuses extends readonly AgentIntentStatus[]>(
 
 export function mayHaveRecordedSignature(error: unknown): boolean {
   if (error instanceof AgentIntentHttpError) return error.status !== 409;
-  // A failed or aborted fetch may have sent the request already.
-  return error instanceof TypeError || error instanceof DOMException;
+  // Only the client's own refusals come before the request; any other failure, such as one
+  // from the app's `fetch`, may come after the BFF got the signature.
+  return !(error instanceof AgentIntentSdkError);
 }
 
 export type OwnSignatures = {

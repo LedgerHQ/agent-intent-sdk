@@ -261,6 +261,8 @@ the user's Trustchain. Responses are checked at runtime and their shapes are
 exported as types, so an app that validates with its own schemas can type them
 against these. Failed calls throw `AgentIntentHttpError` with the BFF's `status`,
 and its `type` when it sends one: one of `AGENT_INTENT_ERROR_TYPES` or a newer one.
+`submitSignature` also throws it, with the 2xx status, when the BFF took the
+signature but its receipt can't be read.
 
 `submitSignature` takes lowercase hex: `0x` + r‖s‖v with v `1b` or `1c` on EVM,
 the 64 bytes without `0x` on Solana. It refuses any other shape before calling
@@ -313,7 +315,8 @@ application stream: add them with
 
 `intentReviewReducer` holds the rules of one approval attempt and says what to
 do next. The app does each step (the BFF calls, the device, its screens) and
-reports what happened:
+reports what happened, with the reviewer client's errors as they are, since the
+reducer classifies them:
 
 ```ts
 import {
@@ -378,8 +381,8 @@ more than `SOLANA_CRAFT_LIFETIME_MS` after it was crafted; `attempt.refreshed`
 then tells the app to say the transaction changed. A craft that collides with
 another craft of the intent is sent again once, and so is one after the device
 installed the app it signs with (`APP_INSTALLED`). When a submission may have
-reached the BFF (a failed fetch, or any answer but a 409, including a 2xx
-whose receipt can't be read), or the BFF refused a craft or a signature
+reached the BFF (any failure but a 409 or the client refusing the signature
+before sending it), or the BFF refused a craft or a signature
 because the intent moved on, the attempt reads the intent and its status
 decides how it ends. A retry after `"failed"` or `"craft-expired"` starts a new
 attempt.

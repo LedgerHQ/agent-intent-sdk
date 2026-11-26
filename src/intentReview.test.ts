@@ -79,6 +79,11 @@ describe("intentReviewReducer", () => {
     expect(reduce(crafting, { type: "SUBMITTED", transactionId: "0xtx" })).toBe(crafting);
     expect(reduce(signing, crafted(2))).toBe(signing);
     expect(reduce(signing, { type: "INTENT_READ", lifecycle: "signed" })).toBe(signing);
+    expect(reduce(signing, { type: "SUBMIT_FAILED", error: httpError(502) })).toBe(signing);
+    expect(reduce(crafting, { type: "APP_INSTALLED", error: new Error("installed") })).toBe(
+      crafting,
+    );
+    expect(reduce(crafting, { type: "SIGN_FAILED", error: new Error("locked") })).toBe(crafting);
   });
 
   it("ignores every event once the attempt ended", () => {
@@ -205,6 +210,20 @@ describe("intentReviewReducer", () => {
       );
 
       expect(attempt.step).toEqual({ type: "failed", phase: "broadcast", error: stale });
+    });
+
+    it("ends as expired when the craft refreshed for a stale revision expires too", () => {
+      const late = SOLANA_CRAFT_LIFETIME_MS + 1;
+      const attempt = reduce(
+        solana(),
+        solanaCrafted(1, 0),
+        signed(0),
+        { type: "SUBMIT_FAILED", error: httpError(409, "stale_revision") },
+        solanaCrafted(2, 0),
+        signed(late),
+      );
+
+      expect(attempt.step).toEqual({ type: "craft-expired" });
     });
 
     it("never expires on EVM", () => {
@@ -450,10 +469,42 @@ describe("own signatures", () => {
     ["a 2xx with an unreadable receipt", httpError(200), true],
     ["a lost connection", new TypeError("Failed to fetch"), true],
     ["a timed-out fetch", new DOMException("The operation timed out.", "TimeoutError"), true],
-    ["an SDK error before the request", new AgentIntentSdkError("Bad signature"), false],
-    ["an error before the request", new Error("Not a signed transaction"), false],
+    [
+      "an error from the app's fetch",
+      Object.assign(new Error("socket hang up"), { name: "FetchError" }),
+      true,
+    ],
+    [
+      "the client refusing the signature before the request",
+      new AgentIntentSdkError("Bad signature"),
+      false,
+    ],
   ])("know whether %s may have recorded the signature", (_, error, recorded) => {
     expect(mayHaveRecordedSignature(error)).toBe(recorded);
+  });
+
+  it("follow the app's own signature from an earlier attempt", async () => {
+    const signatures = createOwnSignatures();
+    const unconfirmed = Promise.reject(httpError(502));
+    signatures.track("intent-1", unconfirmed);
+    await unconfirmed.catch(() => {});
+
+    const first = reduce(evm(), crafted(1), signed(), {
+      type: "SUBMIT_FAILED",
+      error: httpError(502),
+    });
+    expect(reduce(first, { type: "INTENT_READ", lifecycle: undefined }).step).toMatchObject({
+      type: "failed",
+    });
+
+    const second = reduce(evm(), { type: "CRAFT_FAILED", error: httpError(400) });
+    expect(
+      reduce(second, {
+        type: "INTENT_READ",
+        lifecycle: "signed",
+        mayHaveSigned: signatures.mayHaveSigned("intent-1"),
+      }).step,
+    ).toEqual({ type: "submission-ended", lifecycle: "signed", refused: false });
   });
 
   it("keep a signature the BFF accepted", async () => {
