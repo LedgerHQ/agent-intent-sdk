@@ -483,13 +483,27 @@ describe("reviewer client: crafting and signing", () => {
     expect(outcome).toBe(400);
   });
 
-  it("rejects a receipt without a transaction id", async () => {
-    const { client } = reviewer(json({ transactionId: "" }));
+  it.each([
+    ["without a transaction id", json({ transactionId: "" })],
+    ["that is empty", new Response("", { status: 200 })],
+    ["that isn't JSON", new Response("<html></html>", { status: 200 })],
+  ])(
+    "rejects a receipt %s with the 2xx status, since the BFF holds the signature",
+    async (_, response) => {
+      const { client } = reviewer(response);
 
-    await expect(
-      client.submitSignature(INTENT_ID, { signature: EVM_SIGNATURE, revision: 1 }),
-    ).rejects.toThrow("BFF returned a signature receipt with an unexpected shape.");
-  });
+      const error = await client
+        .submitSignature(INTENT_ID, { signature: EVM_SIGNATURE, revision: 1 })
+        .catch((cause: unknown) => cause);
+
+      expect(error).toBeInstanceOf(AgentIntentHttpError);
+      expect(error).toMatchObject({
+        status: 200,
+        type: undefined,
+        message: "BFF returned a signature receipt with an unexpected shape.",
+      });
+    },
+  );
 });
 
 describe("reviewer client: agent profiles", () => {

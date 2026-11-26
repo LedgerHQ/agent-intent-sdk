@@ -261,6 +261,8 @@ the user's Trustchain. Responses are checked at runtime and their shapes are
 exported as types, so an app that validates with its own schemas can type them
 against these. Failed calls throw `AgentIntentHttpError` with the BFF's `status`,
 and its `type` when it sends one: one of `AGENT_INTENT_ERROR_TYPES` or a newer one.
+`submitSignature` also throws it, with the 2xx status, when the BFF took the
+signature but its receipt can't be read.
 
 `submitSignature` takes lowercase hex: `0x` + r‖s‖v with v `1b` or `1c` on EVM,
 the 64 bytes without `0x` on Solana. It refuses any other shape before calling
@@ -308,6 +310,87 @@ take only those streams, and the App-18 agents are their members. Agents enrolle
 before the web app moved them into their own streams can still be members of the
 application stream: add them with
 `mergeMembers(discoverAgentMembers(streams), legacyAgentMembers(applicationStream.members, currentMember.id))`.
+
+### Approving an intent
+
+`intentReviewReducer` holds the rules of one approval attempt and says what to
+do next. The app does each step (the BFF calls, the device, its screens) and
+reports what happened, with the reviewer client's errors as they are, since the
+reducer classifies them:
+
+```ts
+import {
+  createIntentReviewAttempt,
+  createOwnSignatures,
+  intentReviewReducer,
+  type IntentReviewEvent,
+} from "@ledgerhq/agent-intent-sdk";
+
+const ownSignatures = createOwnSignatures(); // one for the app, across attempts
+
+async function approve(intentId: string, family: "evm" | "solana") {
+  let attempt = createIntentReviewAttempt({ family });
+  const report = (event: IntentReviewEvent) => (attempt = intentReviewReducer(attempt, event));
+  for (;;) {
+    const { step } = attempt;
+    switch (step.type) {
+      case "craft":
+        await reviewer.craftIntent(intentId).then(
+          (craft) => report({ type: "CRAFTED", craft, at: Date.now() }),
+          (error) => report({ type: "CRAFT_FAILED", error }),
+        );
+        break;
+      case "sign":
+        // `attempt.refreshed`: say the transaction changed since the user last saw it.
+        await signOnDevice(step.rawTransaction).then(
+          (signature) => report({ type: "SIGNED", signature, at: Date.now() }),
+          (error) => report({ type: "SIGN_FAILED", error }),
+        );
+        break;
+      case "submit": {
+        const submission = reviewer.submitSignature(intentId, step.submission);
+        ownSignatures.track(intentId, submission);
+        await submission.then(
+          ({ transactionId }) => report({ type: "SUBMITTED", transactionId }),
+          (error) => report({ type: "SUBMIT_FAILED", error }),
+        );
+        break;
+      }
+      case "read-intent":
+        await reviewer.getIntent(intentId).then(
+          // Asked once the read settled: a pending submission may have been refused meanwhile.
+          ({ status }) =>
+            report({
+              type: "INTENT_READ",
+              lifecycle: status,
+              mayHaveSigned: ownSignatures.mayHaveSigned(intentId),
+            }),
+          () => report({ type: "INTENT_READ", lifecycle: undefined }),
+        );
+        break;
+      default:
+        // "accepted", "submission-ended", "left-review", "craft-expired" or "failed"
+        return step;
+    }
+  }
+}
+```
+
+An attempt crafts again once after a stale revision or a Solana craft signed
+more than `SOLANA_CRAFT_LIFETIME_MS` after it was crafted; `attempt.refreshed`
+then tells the app to say the transaction changed. A craft that collides with
+another craft of the intent is sent again once, and so is one after the device
+installed the app it signs with (`APP_INSTALLED`). When a submission may have
+reached the BFF (any failure but a 409 or the client refusing the signature
+before sending it), or the BFF refused a craft or a signature
+because the intent moved on, the attempt reads the intent and its status
+decides how it ends. A retry after `"failed"` or `"craft-expired"` starts a new
+attempt.
+
+After `"accepted"`, `pollIntentLifecycle` reads the intent up to `attempts`
+times (8 by default), one second apart, and stops once it succeeds or fails.
+`intentLifecycleReducer` keeps the status the app shows: once the BFF accepted
+this app's broadcast, a late read can't move it back.
 
 ## User-Agent
 

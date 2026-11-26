@@ -55,7 +55,27 @@ export {
 } from "./enrollmentChannel.ts";
 export * from "./fingerprint.ts";
 export * from "./identity.ts";
+export {
+  intentLifecycleReducer,
+  isActionableIntentStatus,
+  isSubmittedIntentStatus,
+  pollIntentLifecycle,
+  submittedIntentStatus,
+  type IntentLifecycleEvent,
+  type IntentLifecycleState,
+} from "./intentLifecycle.ts";
 export * from "./intentPage.ts";
+export {
+  createIntentReviewAttempt,
+  createOwnSignatures,
+  intentReviewReducer,
+  SOLANA_CRAFT_LIFETIME_MS,
+  type IntentReviewAttempt,
+  type IntentReviewEvent,
+  type IntentReviewPhase,
+  type IntentReviewStep,
+  type OwnSignatures,
+} from "./intentReview.ts";
 export * from "./intents.ts";
 export * from "./recovery.ts";
 export * from "./reviewerClient.ts";

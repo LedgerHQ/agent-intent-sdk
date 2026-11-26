@@ -183,12 +183,20 @@ export function createAgentIntentReviewerClient(input: {
         throw new AgentIntentSdkError(`Invalid craft revision: ${String(submission.revision)}.`);
       }
       const url = intentStep(intentId, "signature");
-      return parseReceipt(
-        await requestOk(url, "POST", {
-          signature: submission.signature,
-          revision: submission.revision,
-        }),
-      );
+      const { response, body } = await request(url, "POST", {
+        signature: submission.signature,
+        revision: submission.revision,
+      });
+      if (!response.ok) throw httpError(response, body);
+      const receipt = readReceipt(body);
+      if (receipt === undefined) {
+        // After a 2xx the BFF holds the signature, so the error keeps the status.
+        throw new AgentIntentHttpError(
+          "BFF returned a signature receipt with an unexpected shape.",
+          response.status,
+        );
+      }
+      return receipt;
     },
     rejectIntent: async (intentId) => {
       await requestOk(intentStep(intentId, "reject"), "POST");
@@ -270,12 +278,16 @@ function parseCraft(body: string): AgentIntentCraft {
   return craft;
 }
 
-function parseReceipt(body: string): AgentIntentSignatureReceipt {
-  const receipt = parseJson(body, "a signature receipt");
-  if (!isRecord(receipt) || !isNonEmptyString(receipt.transactionId)) {
-    throw new AgentIntentSdkError("BFF returned a signature receipt with an unexpected shape.");
+function readReceipt(body: string): AgentIntentSignatureReceipt | undefined {
+  let receipt: unknown;
+  try {
+    receipt = JSON.parse(body);
+  } catch {
+    return undefined;
   }
-  return { transactionId: receipt.transactionId };
+  return isRecord(receipt) && isNonEmptyString(receipt.transactionId)
+    ? { transactionId: receipt.transactionId }
+    : undefined;
 }
 
 function isAgentIntentStats(value: unknown): value is AgentIntentStats {
