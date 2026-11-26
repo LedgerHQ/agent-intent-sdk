@@ -350,14 +350,18 @@ async function approve(intentId: string, family: "evm" | "solana") {
         );
         break;
       }
-      case "read-intent": {
-        const mayHaveSigned = ownSignatures.mayHaveSigned(intentId);
+      case "read-intent":
         await reviewer.getIntent(intentId).then(
-          ({ status }) => report({ type: "INTENT_READ", lifecycle: status, mayHaveSigned }),
-          () => report({ type: "INTENT_READ", lifecycle: undefined, mayHaveSigned }),
+          // Asked once the read settled: a pending submission may have been refused meanwhile.
+          ({ status }) =>
+            report({
+              type: "INTENT_READ",
+              lifecycle: status,
+              mayHaveSigned: ownSignatures.mayHaveSigned(intentId),
+            }),
+          () => report({ type: "INTENT_READ", lifecycle: undefined }),
         );
         break;
-      }
       default:
         // "accepted", "submission-ended", "left-review", "craft-expired" or "failed"
         return step;

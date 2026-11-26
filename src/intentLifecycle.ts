@@ -38,15 +38,20 @@ export type IntentLifecycleEvent =
 export function intentLifecycleReducer<State extends IntentLifecycleState>(
   state: State,
   event: IntentLifecycleEvent,
-): State {
+): Omit<State, keyof IntentLifecycleState> & IntentLifecycleState {
   switch (event.type) {
     case "ACCEPTED":
-      return { ...state, broadcastAccepted: true, lifecycle: "broadcast" };
+      // A late or repeated acceptance keeps a terminal status.
+      return {
+        ...state,
+        broadcastAccepted: true,
+        lifecycle: submittedIntentStatus(state.lifecycle),
+      };
     case "RECEIPT":
       return {
         ...state,
         broadcastAccepted: true,
-        lifecycle: "broadcast",
+        lifecycle: submittedIntentStatus(state.lifecycle),
         transactionId: event.transactionId,
       };
     case "LIFECYCLE":
@@ -58,7 +63,10 @@ export function intentLifecycleReducer<State extends IntentLifecycleState>(
   }
 }
 
-/** Reads the intent until it succeeds or fails; a failed read is retried within `attempts`. */
+/**
+ * Reads the intent until it succeeds or fails; a failed read is retried within `attempts`.
+ * An error thrown by `onRefreshed` rejects the polling.
+ */
 export async function pollIntentLifecycle<Intent extends { status: Lifecycle }>({
   intentId,
   attempts = POLL_ATTEMPTS,
@@ -80,15 +88,17 @@ export async function pollIntentLifecycle<Intent extends { status: Lifecycle }>(
     if (attempt > 0) await wait(POLL_INTERVAL_MS);
     if (!isCurrentRun()) return;
 
+    let refreshed: Intent;
     try {
-      const refreshed = await refresh(intentId);
-      if (!isCurrentRun()) return;
-
-      onRefreshed(refreshed);
-      if (isTerminal(refreshed.status)) return;
+      refreshed = await refresh(intentId);
     } catch {
       // A transient read failure doesn't undo an accepted broadcast.
+      continue;
     }
+    if (!isCurrentRun()) return;
+
+    onRefreshed(refreshed);
+    if (isTerminal(refreshed.status)) return;
   }
 }
 

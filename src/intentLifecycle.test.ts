@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
   intentLifecycleReducer,
   isActionableIntentStatus,
@@ -7,7 +7,7 @@ import {
   submittedIntentStatus,
   type IntentLifecycleState,
 } from "./intentLifecycle.ts";
-import { AGENT_INTENT_STATUSES } from "./intentPage.ts";
+import { AGENT_INTENT_STATUSES, type AgentIntentRecord } from "./intentPage.ts";
 
 describe("intent statuses", () => {
   // Status, actionable, submitted, status after this app's accepted broadcast.
@@ -114,11 +114,33 @@ describe("intentLifecycleReducer", () => {
 
   it("keeps the app's own fields", () => {
     const state = { lifecycle: "crafted", deviceAction: { status: "pending" } } as const;
+    const accepted = intentLifecycleReducer(state, { type: "ACCEPTED" });
 
-    expect(intentLifecycleReducer(state, { type: "ACCEPTED" })).toEqual({
+    expect(accepted).toEqual({
       lifecycle: "broadcast",
       broadcastAccepted: true,
       deviceAction: { status: "pending" },
+    });
+    expectTypeOf(accepted.lifecycle).toEqualTypeOf<AgentIntentRecord["status"]>();
+    expectTypeOf(accepted.deviceAction).toEqualTypeOf<{ readonly status: "pending" }>();
+  });
+
+  it("keeps a terminal status on a late receipt and records its transaction", () => {
+    expect(
+      intentLifecycleReducer({ lifecycle: "success" }, { type: "RECEIPT", transactionId: "0xtx" }),
+    ).toEqual({ lifecycle: "success", broadcastAccepted: true, transactionId: "0xtx" });
+  });
+
+  it("keeps a terminal status on a repeated acceptance", () => {
+    let state: IntentLifecycleState = intentLifecycleReducer(
+      { lifecycle: "crafted" },
+      { type: "ACCEPTED" },
+    );
+    state = intentLifecycleReducer(state, { type: "LIFECYCLE", lifecycle: "failed" });
+
+    expect(intentLifecycleReducer(state, { type: "ACCEPTED" })).toEqual({
+      lifecycle: "failed",
+      broadcastAccepted: true,
     });
   });
 });
@@ -195,5 +217,22 @@ describe("pollIntentLifecycle", () => {
     });
 
     expect(refresh).toHaveBeenCalledTimes(8);
+  });
+
+  it("rejects when the app's callback throws, without reading again", async () => {
+    const refresh = vi.fn(async () => ({ status: "broadcast" as const }));
+    const failure = new Error("cache update failed");
+
+    await expect(
+      pollIntentLifecycle({
+        intentId: "intent-1",
+        refresh,
+        wait: async () => {},
+        onRefreshed: () => {
+          throw failure;
+        },
+      }),
+    ).rejects.toBe(failure);
+    expect(refresh).toHaveBeenCalledOnce();
   });
 });
