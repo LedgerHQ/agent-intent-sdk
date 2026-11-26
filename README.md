@@ -293,7 +293,7 @@ const { agents, unrecognized } = resolveAgents({
   },
   app16: (key) => (app16Keys.has(key) ? "present" : "missing"), // `key` is lowercased
 });
-const restore = deriveAgentRestore(agents[0].status); // "agent-access" | "account-access" | undefined
+const restores = agents.map(({ status }) => deriveAgentRestore(status)); // "agent-access" | "account-access" | undefined
 
 const path = nextAgentSubtreePath(applicationPath, agentPublicKey, streams);
 ```
