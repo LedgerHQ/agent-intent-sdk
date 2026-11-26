@@ -5,12 +5,10 @@ type Lifecycle = AgentIntentRecord["status"];
 const POLL_INTERVAL_MS = 1_000;
 const POLL_ATTEMPTS = 8;
 
-/** The user can still approve or reject the intent. */
 export function isActionableIntentStatus(status: Lifecycle): boolean {
   return status === "created" || status === "crafted";
 }
 
-/** A signature was submitted for the intent. */
 export function isSubmittedIntentStatus(status: Lifecycle): boolean {
   return (
     status === "signed" || status === "broadcast" || status === "success" || status === "failed"
@@ -24,7 +22,6 @@ export function submittedIntentStatus(status: Lifecycle): "broadcast" | "success
 
 export type IntentLifecycleState = {
   lifecycle: Lifecycle;
-  /** The BFF accepted this app's broadcast. */
   broadcastAccepted?: boolean;
   transactionId?: string;
 };
@@ -63,10 +60,7 @@ export function intentLifecycleReducer<State extends IntentLifecycleState>(
   }
 }
 
-/**
- * Reads the intent until it succeeds or fails; a failed read is retried within `attempts`.
- * An error thrown by `onRefreshed` rejects the polling.
- */
+/** An error thrown by `onRefreshed` rejects the polling. */
 export async function pollIntentLifecycle<Intent extends { status: Lifecycle }>({
   intentId,
   attempts = POLL_ATTEMPTS,

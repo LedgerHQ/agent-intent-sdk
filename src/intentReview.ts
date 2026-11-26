@@ -1,7 +1,9 @@
 import { AgentIntentHttpError } from "./bffHttp.ts";
+import { AgentIntentSdkError } from "./bytes.ts";
 import { isActionableIntentStatus } from "./intentLifecycle.ts";
 import type { AgentIntentRecord, AgentIntentStatus } from "./intentPage.ts";
 import {
+  isAgentIntentErrorType,
   isStaleRevisionError,
   type AgentIntentCraft,
   type AgentIntentSignatureSubmission,
@@ -9,10 +11,7 @@ import {
 
 type Lifecycle = AgentIntentRecord["status"];
 
-/**
- * How long after its craft a Solana transaction may still be signed and submitted. Its blockhash
- * expires after about 150 blocks (roughly a minute), and an expired one would fail the intent.
- */
+/** A Solana blockhash expires after about a minute, and submitting an expired one fails the intent. */
 export const SOLANA_CRAFT_LIFETIME_MS = 45_000;
 
 export type IntentReviewPhase = "craft" | "device" | "broadcast";
@@ -24,22 +23,18 @@ export type IntentReviewStep =
   | { type: "submit"; submission: AgentIntentSignatureSubmission }
   /** Read the intent: its status decides how an unclear failure ends. */
   | { type: "read-intent" }
-  /** The BFF took the broadcast: poll the intent until it succeeds or fails. */
   | { type: "accepted"; lifecycle: "broadcast" | "success"; transactionId?: string }
   /** No retry: the BFF ended the intent, or kept it signed without a broadcast. */
   | { type: "submission-ended"; lifecycle: "failed" | "signed"; refused: boolean }
-  /** The intent left review; `elsewhere` when another app or device moved it on, not this app's signature. */
+  /** `elsewhere`: this app's signature can't be what moved the intent on. */
   | { type: "left-review"; lifecycle: Lifecycle; elsewhere: boolean }
-  /** The Solana craft expired before it was signed, for the second time. A retry starts a new attempt. */
   | { type: "craft-expired" }
-  /** A retry starts a new attempt. */
   | { type: "failed"; phase: IntentReviewPhase; error: unknown };
 
 /** The app reads `step` and `refreshed`; the other fields are the reducer's own. */
 export type IntentReviewAttempt = {
   readonly family: "evm" | "solana";
   readonly step: IntentReviewStep;
-  /** Crafted again after a stale revision or an expired craft, which happens once per attempt. */
   readonly refreshed: boolean;
   readonly retriedCraft: boolean;
   readonly appInstalled: boolean;
@@ -53,15 +48,11 @@ export type IntentReviewEvent =
   | { type: "CRAFT_FAILED"; error: unknown }
   /** `signature` as `submitSignature` takes it; `at`: when the device signed, in milliseconds. */
   | { type: "SIGNED"; signature: string; at: number }
-  /** The device installed the app it signs with and ended the signing: craft again, once. */
   | { type: "APP_INSTALLED"; error: unknown }
   | { type: "SIGN_FAILED"; error: unknown }
   | { type: "SUBMITTED"; transactionId: string }
   | { type: "SUBMIT_FAILED"; error: unknown }
-  /**
-   * `lifecycle` is `undefined` when the read failed. `mayHaveSigned`: an earlier submission of
-   * this app may have been recorded (`createOwnSignatures`); this attempt's own counts without it.
-   */
+  /** `undefined` when the read failed. `mayHaveSigned` covers this app's earlier submissions. */
   | { type: "INTENT_READ"; lifecycle: Lifecycle | undefined; mayHaveSigned?: boolean };
 
 export function createIntentReviewAttempt({
@@ -87,6 +78,14 @@ export function intentReviewReducer(
   switch (event.type) {
     case "CRAFTED":
       if (step.type !== "craft") return attempt;
+      // A Solana wire transaction in base64 can't start with "0x".
+      if (event.craft.rawTransaction.startsWith("0x") !== (attempt.family === "evm")) {
+        return failed(
+          attempt,
+          "craft",
+          new AgentIntentSdkError(`The crafted transaction isn't a ${attempt.family} transaction.`),
+        );
+      }
       return {
         ...attempt,
         step: { type: "sign", rawTransaction: event.craft.rawTransaction },
@@ -95,12 +94,11 @@ export function intentReviewReducer(
       };
     case "CRAFT_FAILED":
       if (step.type !== "craft") return attempt;
-      // Another craft of the same intent ran at the same time.
       if (isConcurrentCraft(event.error) && !attempt.retriedCraft) {
         return { ...attempt, step: { type: "craft" }, retriedCraft: true };
       }
-      // An untyped 400: the BFF refuses to craft an intent that left review.
-      if (isHttpError(event.error, 400) && event.error.type === undefined) {
+      // The BFF refuses to craft an intent that left review with a 400 of no documented type.
+      if (isHttpError(event.error, 400) && !isAgentIntentErrorType(event.error.type)) {
         return readIntent(attempt, "craft", event.error);
       }
       return failed(attempt, "craft", event.error);
@@ -173,7 +171,9 @@ function settledStep(
     return { type: "submission-ended", lifecycle, refused: false };
   }
   if (isOneOf(lifecycle, ["broadcast", "success"])) return { type: "accepted", lifecycle };
-  return { type: "left-review", lifecycle, elsewhere: false };
+  // The BFF has no transition from Signed to Rejected or Cancelled.
+  const elsewhere = isOneOf(lifecycle, ["rejected", "cancelled"]);
+  return { type: "left-review", lifecycle, elsewhere };
 }
 
 // `===` doesn't narrow away the open `string & {}` of a status.
@@ -181,13 +181,13 @@ function isOneOf<const Statuses extends readonly AgentIntentStatus[]>(
   lifecycle: Lifecycle,
   statuses: Statuses,
 ): lifecycle is Statuses[number] {
-  return (statuses as readonly string[]).includes(lifecycle);
+  return statuses.some((status) => status === lifecycle);
 }
 
-/** The BFF may hold the signature: it answered other than with a conflict, or the connection failed. */
 export function mayHaveRecordedSignature(error: unknown): boolean {
   if (error instanceof AgentIntentHttpError) return error.status !== 409;
-  return error instanceof TypeError;
+  // A failed or aborted fetch may have sent the request already.
+  return error instanceof TypeError || error instanceof DOMException;
 }
 
 export type OwnSignatures = {

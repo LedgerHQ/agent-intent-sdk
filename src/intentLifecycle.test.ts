@@ -146,11 +146,11 @@ describe("intentLifecycleReducer", () => {
 });
 
 describe("pollIntentLifecycle", () => {
-  it("reads until the intent succeeds", async () => {
+  it.each(["success", "failed"] as const)("reads until the intent is %s", async (status) => {
     const refresh = vi
       .fn()
       .mockResolvedValueOnce({ status: "broadcast" })
-      .mockResolvedValue({ status: "success" });
+      .mockResolvedValue({ status });
     const wait = vi.fn(async () => {});
     const onRefreshed = vi.fn();
 
@@ -158,7 +158,24 @@ describe("pollIntentLifecycle", () => {
 
     expect(refresh).toHaveBeenCalledTimes(2);
     expect(refresh).toHaveBeenCalledWith("intent-1");
-    expect(onRefreshed.mock.calls).toEqual([[{ status: "broadcast" }], [{ status: "success" }]]);
+    expect(onRefreshed.mock.calls).toEqual([[{ status: "broadcast" }], [{ status }]]);
+  });
+
+  it("doesn't read again once the app stopped following the run during the wait", async () => {
+    let current = true;
+    const refresh = vi.fn(async () => ({ status: "broadcast" as const }));
+
+    await pollIntentLifecycle({
+      intentId: "intent-1",
+      refresh,
+      wait: async () => {
+        current = false;
+      },
+      isCurrentRun: () => current,
+      onRefreshed: vi.fn(),
+    });
+
+    expect(refresh).toHaveBeenCalledOnce();
   });
 
   it("stops a run the app no longer follows before applying a late read", async () => {

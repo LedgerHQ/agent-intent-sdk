@@ -375,13 +375,16 @@ more than `SOLANA_CRAFT_LIFETIME_MS` after it was crafted; `attempt.refreshed`
 then tells the app to say the transaction changed. A craft that collides with
 another craft of the intent is sent again once, and so is one after the device
 installed the app it signs with (`APP_INSTALLED`). When a submission may have
-reached the BFF, or the BFF refused a craft or a signature because the intent
-moved on, the attempt reads the intent and its status decides how it ends. A
-retry after `"failed"` or `"craft-expired"` starts a new attempt.
+reached the BFF (a failed fetch, or any answer but a 409, including a 2xx
+whose receipt can't be read), or the BFF refused a craft or a signature
+because the intent moved on, the attempt reads the intent and its status
+decides how it ends. A retry after `"failed"` or `"craft-expired"` starts a new
+attempt.
 
-After `"accepted"`, `pollIntentLifecycle` reads the intent until it succeeds
-or fails, and `intentLifecycleReducer` keeps the status the app shows: once the
-BFF accepted this app's broadcast, a late read can't move it back.
+After `"accepted"`, `pollIntentLifecycle` reads the intent up to `attempts`
+times (8 by default), one second apart, and stops once it succeeds or fails.
+`intentLifecycleReducer` keeps the status the app shows: once the BFF accepted
+this app's broadcast, a late read can't move it back.
 
 ## User-Agent
 

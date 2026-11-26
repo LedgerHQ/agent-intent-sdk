@@ -69,7 +69,6 @@ export {
   createIntentReviewAttempt,
   createOwnSignatures,
   intentReviewReducer,
-  mayHaveRecordedSignature,
   SOLANA_CRAFT_LIFETIME_MS,
   type IntentReviewAttempt,
   type IntentReviewEvent,

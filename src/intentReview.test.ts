@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { AgentIntentHttpError } from "./bffHttp.ts";
+import { AgentIntentSdkError } from "./bytes.ts";
+import { staticAccessTokenProvider } from "./client.ts";
 import {
   createIntentReviewAttempt,
   createOwnSignatures,
@@ -9,6 +11,7 @@ import {
   type IntentReviewAttempt,
   type IntentReviewEvent,
 } from "./intentReview.ts";
+import { createAgentIntentReviewerClient } from "./reviewerClient.ts";
 
 const SIGNATURE = `0x${"ab".repeat(64)}1b`;
 
@@ -16,8 +19,12 @@ function reduce(attempt: IntentReviewAttempt, ...events: IntentReviewEvent[]): I
   return events.reduce(intentReviewReducer, attempt);
 }
 
-function crafted(revision: number, at = 0): IntentReviewEvent {
-  return { type: "CRAFTED", craft: { rawTransaction: `0x0${revision}`, revision }, at };
+function crafted(revision: number, at = 0, rawTransaction = `0x0${revision}`): IntentReviewEvent {
+  return { type: "CRAFTED", craft: { rawTransaction, revision }, at };
+}
+
+function solanaCrafted(revision: number, at = 0): IntentReviewEvent {
+  return crafted(revision, at, "AQID");
 }
 
 function signed(at = 0): IntentReviewEvent {
@@ -52,6 +59,16 @@ describe("intentReviewReducer", () => {
       transactionId: "0xtx",
     });
     expect(attempt.refreshed).toBe(false);
+  });
+
+  it.each([
+    ["an EVM", evm, "AQID"],
+    ["a Solana", solana, "0x02"],
+  ])("refuses a craft of another chain for %s intent", (_, attempt, rawTransaction) => {
+    const { step } = reduce(attempt(), crafted(1, 0, rawTransaction));
+
+    expect(step).toMatchObject({ type: "failed", phase: "craft" });
+    expect(step.type === "failed" && step.error).toBeInstanceOf(AgentIntentSdkError);
   });
 
   it("ignores an event that doesn't answer the current step", () => {
@@ -144,7 +161,7 @@ describe("intentReviewReducer", () => {
     it("is crafted again when the signature comes after its lifetime", () => {
       const attempt = reduce(
         solana(),
-        crafted(1, 1_000),
+        solanaCrafted(1, 1_000),
         signed(1_000 + SOLANA_CRAFT_LIFETIME_MS + 1),
       );
 
@@ -153,7 +170,11 @@ describe("intentReviewReducer", () => {
     });
 
     it("is submitted when signed at the end of its lifetime", () => {
-      const attempt = reduce(solana(), crafted(1, 1_000), signed(1_000 + SOLANA_CRAFT_LIFETIME_MS));
+      const attempt = reduce(
+        solana(),
+        solanaCrafted(1, 1_000),
+        signed(1_000 + SOLANA_CRAFT_LIFETIME_MS),
+      );
 
       expect(attempt.step.type).toBe("submit");
     });
@@ -162,9 +183,9 @@ describe("intentReviewReducer", () => {
       const late = SOLANA_CRAFT_LIFETIME_MS + 1;
       const attempt = reduce(
         solana(),
-        crafted(1, 0),
+        solanaCrafted(1, 0),
         signed(late),
-        crafted(2, late),
+        solanaCrafted(2, late),
         signed(2 * late),
       );
 
@@ -176,9 +197,9 @@ describe("intentReviewReducer", () => {
       const stale = httpError(409, "stale_revision");
       const attempt = reduce(
         solana(),
-        crafted(1, 0),
+        solanaCrafted(1, 0),
         signed(late),
-        crafted(2, late),
+        solanaCrafted(2, late),
         signed(late),
         { type: "SUBMIT_FAILED", error: stale },
       );
@@ -194,11 +215,11 @@ describe("intentReviewReducer", () => {
 
     it("is crafted again, without a refresh, once the device installed its app", () => {
       const installed = new Error("Solana app installed");
-      let attempt = reduce(solana(), crafted(1), { type: "APP_INSTALLED", error: installed });
+      let attempt = reduce(solana(), solanaCrafted(1), { type: "APP_INSTALLED", error: installed });
       expect(attempt.step).toEqual({ type: "craft" });
       expect(attempt.refreshed).toBe(false);
 
-      attempt = reduce(attempt, crafted(2), { type: "APP_INSTALLED", error: installed });
+      attempt = reduce(attempt, solanaCrafted(2), { type: "APP_INSTALLED", error: installed });
       expect(attempt.step).toEqual({ type: "failed", phase: "device", error: installed });
     });
   });
@@ -228,6 +249,12 @@ describe("intentReviewReducer", () => {
 
     it("reads the intent after an untyped 400", () => {
       expect(refusedCraft().step).toEqual({ type: "read-intent" });
+    });
+
+    it("reads the intent after a 400 of a type the SDK doesn't know", () => {
+      expect(
+        reduce(evm(), { type: "CRAFT_FAILED", error: httpError(400, "intent_moved_on") }).step,
+      ).toEqual({ type: "read-intent" });
     });
 
     it("fails at once on a typed 400", () => {
@@ -282,7 +309,9 @@ describe("intentReviewReducer", () => {
     it.each([
       ["a bad gateway", unconfirmed],
       ["an untyped 400", httpError(400)],
+      ["a 2xx with an unreadable receipt", httpError(200)],
       ["a lost connection", new TypeError("Failed to fetch")],
+      ["an aborted fetch", new DOMException("The operation was aborted.", "AbortError")],
     ])("reads the intent after %s", (_, error) => {
       expect(reduce(evm(), crafted(1), signed(), { type: "SUBMIT_FAILED", error }).step).toEqual({
         type: "read-intent",
@@ -310,13 +339,21 @@ describe("intentReviewReducer", () => {
       },
     );
 
-    it.each(["rejected", "cancelled", "expired"] as const)(
-      "leaves review as its own when the intent is %s",
+    it("leaves review as its own when the signed intent expired", () => {
+      expect(reduce(submitted(), { type: "INTENT_READ", lifecycle: "expired" }).step).toEqual({
+        type: "left-review",
+        lifecycle: "expired",
+        elsewhere: false,
+      });
+    });
+
+    it.each(["rejected", "cancelled"] as const)(
+      "leaves review as handled elsewhere when the intent is %s, which a signed intent can't become",
       (lifecycle) => {
         expect(reduce(submitted(), { type: "INTENT_READ", lifecycle }).step).toEqual({
           type: "left-review",
           lifecycle,
-          elsewhere: false,
+          elsewhere: true,
         });
       },
     );
@@ -361,14 +398,47 @@ describe("intentReviewReducer", () => {
         error: conflict,
       });
     });
+
+    it("follows the intent as its own when an earlier signature may have been recorded", () => {
+      expect(
+        reduce(refused(), { type: "INTENT_READ", lifecycle: "broadcast", mayHaveSigned: true })
+          .step,
+      ).toEqual({ type: "accepted", lifecycle: "broadcast" });
+    });
   });
 
   it("fails at once on a submission error before the request", () => {
-    const invalid = new Error("The signature must be lowercase hex.");
+    const invalid = new AgentIntentSdkError("The signature must be lowercase hex.");
 
     expect(
       reduce(evm(), crafted(1), signed(), { type: "SUBMIT_FAILED", error: invalid }).step,
     ).toEqual({ type: "failed", phase: "broadcast", error: invalid });
+  });
+
+  describe("with the reviewer client's errors", () => {
+    async function submitStep(response: Response, signature = SIGNATURE) {
+      const client = createAgentIntentReviewerClient({
+        bffBaseUrl: "https://bff.example",
+        tokenProvider: staticAccessTokenProvider("user-token"),
+        fetch: async () => response,
+      });
+      const error = await client
+        .submitSignature("intent-1", { signature, revision: 1 })
+        .catch((cause: unknown) => cause);
+      return reduce(evm(), crafted(1), signed(), { type: "SUBMIT_FAILED", error }).step;
+    }
+
+    it("reads the intent after a 2xx whose receipt can't be read", async () => {
+      expect(await submitStep(new Response("{}", { status: 200 }))).toEqual({
+        type: "read-intent",
+      });
+    });
+
+    it("fails at once when the client refuses the signature before the request", async () => {
+      expect(
+        await submitStep(new Response("{}", { status: 200 }), "not-a-signature"),
+      ).toMatchObject({ type: "failed", phase: "broadcast" });
+    });
   });
 });
 
@@ -377,10 +447,23 @@ describe("own signatures", () => {
     ["a conflict", httpError(409, "duplicate_event"), false],
     ["an untyped 400", httpError(400), true],
     ["a bad gateway", httpError(502), true],
+    ["a 2xx with an unreadable receipt", httpError(200), true],
     ["a lost connection", new TypeError("Failed to fetch"), true],
+    ["a timed-out fetch", new DOMException("The operation timed out.", "TimeoutError"), true],
+    ["an SDK error before the request", new AgentIntentSdkError("Bad signature"), false],
     ["an error before the request", new Error("Not a signed transaction"), false],
   ])("know whether %s may have recorded the signature", (_, error, recorded) => {
     expect(mayHaveRecordedSignature(error)).toBe(recorded);
+  });
+
+  it("keep a signature the BFF accepted", async () => {
+    const signatures = createOwnSignatures();
+    const accepted = Promise.resolve({ transactionId: "0xtx" });
+
+    signatures.track("intent-1", accepted);
+    await accepted;
+
+    expect(signatures.mayHaveSigned("intent-1")).toBe(true);
   });
 
   it("keep an earlier unanswered signature when a later one is refused", async () => {
